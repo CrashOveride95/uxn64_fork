@@ -12,12 +12,8 @@ LIBULTRA     := $(LIBULTRA_DIR)/usr/lib/libgultra.a
 # Source code location and files to watch for changes.
 SRC_DIR     := src
 BUILD_DIR   := build
-SRC_MAIN    := $(SRC_DIR)/onetri.c \
-			   $(SRC_DIR)/dram_stack.c \
-			   $(SRC_DIR)/rdp_output.c
-SRC_OBJ     := $(SRC_DIR)/static.c \
-			   $(SRC_DIR)/cfb.c \
-			   $(SRC_DIR)/rsp_cfb.c
+SRC_MAIN    := $(SRC_DIR)/main.c
+SRC_OBJ     :=
 OBJECTS     := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRC_OBJ))
 
 WATCH_SRC   := $(shell find $(SRC_DIR) -name "*.c" -or -name "*.s" -or -name "*.h")
@@ -74,10 +70,11 @@ $(BIN): $(ELF) $(OBJECTS) $(WATCH_SRC)
 		--cpp_command="$(SDK_BIN)/mips32-elf-gcc" \
 		--ld_command="$(SDK_BIN)/mips32-elf-ld" \
 		--objcopy_command="$(SDK_BIN)/mips32-elf-objcopy"
+	rm a.out
 	$(MAKEMASK) $(BIN)
 
 # Test the output .n64 in an emulator.
-run: $(BIN)
+run: $(BUILD_DIR) $(BIN)
 	# TODO: Test roms with MAME or cen64 instead of mupen64 for better accuracy.
 	mupen64plus $(BIN)
 

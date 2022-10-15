@@ -1,0 +1,15 @@
+beginseg
+	name "code"
+	flags BOOT OBJECT
+	entry boot
+	stack boot_stack + STACK_SIZE
+	include "build/blank.elf"
+	include "/opt/n64sdk/libultra/usr/lib/PR/rspboot.o"
+	include "/opt/n64sdk/libultra/usr/lib/PR/gspF3DEX2.xbus.o"
+	include "/opt/n64sdk/libultra/usr/lib/PR/gspF3DEX2.fifo.o"
+endseg
+
+beginwave
+	name "build/onetri"
+	include "code"
+endwave
