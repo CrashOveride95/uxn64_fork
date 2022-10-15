@@ -66,36 +66,20 @@ main_proc(void *arg) {
     // 10. Video signal is produced.
 
     // Main loop.
-    size_t i = 0;
+    int i = 0;
+    int increment = 4;
+    int direction = increment;
     while (true) {
-        i += 2;
-
-        // Task list.
-        OSTask tlist = (OSTask){
-            {
-                M_GFXTASK,            // task type
-                OS_TASK_DP_WAIT,      // task flags
-                NULL,                 // boot ucode pointer (fill in later)
-                0,                    // boot ucode size (fill in later)
-                NULL,                 // task ucode pointer (fill in later)
-                SP_UCODE_SIZE,        // task ucode size
-                NULL,                 // task ucode data pointer (fill in later)
-                SP_UCODE_DATA_SIZE,   // task ucode data size
-                &dram_stack[0],       // task dram stack pointer
-                SP_DRAM_STACK_SIZE8,  // task dram stack size
-                NULL,                 // FIFO buffer start.
-                NULL,                 // FIFO buffer end.
-                NULL,                 // task data pointer (fill in later)
-                0,                    // task data size (fill in later)
-                NULL,                 // task yield buffer ptr (not used here)
-                0                     // task yield buffer size (not used here)
-            },
-        };
+        if (i >= 255 - increment) {
+            direction = -increment;
+        } else if (i <= 0) {
+            direction = +increment;
+        }
+        i += direction;
 
         // Graphics command list.
-        Gfx    glist[2048];
-
-        OSTask *tlistp = &tlist;
+        // TODO: Check out of bounds when adding elements to the list.
+        Gfx glist[2048];
         Gfx *glistp = glist;
 
         // Tell RCP where each segment is.
@@ -114,16 +98,24 @@ main_proc(void *arg) {
         gDPFullSync(glistp++);
         gSPEndDisplayList(glistp++);
 
-        // Build graphics task:
-        tlistp->t.ucode_boot = (u64 *) rspbootTextStart;
-        tlistp->t.ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart;
-        tlistp->t.ucode = (u64 *) gspF3DEX2_fifoTextStart;
-        tlistp->t.ucode_data = (u64 *) gspF3DEX2_fifoDataStart;
-        tlistp->t.data_ptr = (u64 *) glist;
-        tlistp->t.data_size = (u32)((glistp - glist) * sizeof(Gfx));
-
-        // Start up the RSP task.
-        osSpTaskStart(tlistp);
+        // Start up the RSP task list.
+        OSTask tlist = (OSTask){
+            {
+                .type = M_GFXTASK,
+                .flags = OS_TASK_DP_WAIT,
+                .ucode_boot = (u64*) rspbootTextStart,
+                .ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart,
+                .ucode = (u64*)gspF3DEX2_xbusTextStart,
+                .ucode_size = SP_UCODE_SIZE,
+                .ucode_data = (u64*)gspF3DEX2_xbusDataStart,
+                .ucode_data_size = SP_UCODE_DATA_SIZE,
+                .data_ptr = (u64*) glist,
+                .data_size = (u32)((glistp - glist) * sizeof(Gfx)),
+                .dram_stack = dram_stack,
+                .dram_stack_size = SP_DRAM_STACK_SIZE8,
+            },
+        };
+        osSpTaskStart(&tlist);
 
         // Wait for RDP completion.
         osRecvMesg(&rdp_msg_queue, NULL, OS_MESG_BLOCK);
