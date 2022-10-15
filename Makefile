@@ -1,5 +1,6 @@
 .POSIX:
 .SUFFIXES:
+.PHONY: main run clean
 
 # Paths for SDK.
 SDK_BASE     := /opt/n64sdk
@@ -62,10 +63,9 @@ else
     CFLAGS += $(RELEASE_CFLAGS)
 endif
 
-main: $(BIN)
+main: $(BUILD_DIR) $(BIN)
 
 $(ELF): $(SRC_MAIN) $(WATCH_SRC)
-	mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRC_MAIN) $(LDLIBS)
 
 $(BIN): $(ELF) $(OBJECTS) $(WATCH_SRC)
@@ -85,9 +85,10 @@ run: $(BIN)
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: main run clean
-
-# Inference rules.
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+# Create the build directory.
+$(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+
+# Inference rules for C files.
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) $< -o $@
