@@ -3,8 +3,8 @@
 #include "types.h"
 
 // Screen size.
-#define SCREEN_HEIGHT 240
 #define SCREEN_WIDTH  320
+#define SCREEN_HEIGHT 240
 
 // Get a pointer to the start (top) of a stack.
 #define STACK_START(stack) ((stack) + sizeof((stack)))
@@ -25,9 +25,9 @@ u64 boot_stack[STACK_SIZE / sizeof(u64)]    __attribute__((aligned(8)));
 // Framebuffers.
 //
 
-u16 framebuffers[2][SCREEN_WIDTH * SCREEN_HEIGHT];
-u16 rsp_framebuffer[SCREEN_WIDTH * SCREEN_HEIGHT];
+u16 framebuffers[2][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
 static int current_fb = 0;
+static u16 pixels[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
 
 //
 // Message buffers and queues.
@@ -42,6 +42,71 @@ static OSMesgQueue retrace_msg_queue;
 
 // Handle for rom memory.
 OSPiHandle *rom_handle;
+
+// DEBUG: animations
+static int t = 0;
+
+void
+fb_write_test(void) {
+    for (size_t j = 0; j < SCREEN_HEIGHT; j++) {
+        for (size_t i = 0; i < SCREEN_WIDTH; i++) {
+            // u16 shade_x = (float)i / (float)SCREEN_WIDTH * 32;
+            // u16 shade_y = (float)j / (float)SCREEN_HEIGHT * 32;
+            // u16 color = shade_x << 11 | shade_y << 1;
+            u16 shade_x = (float)i / (float)SCREEN_WIDTH * 255;
+            u16 shade_y = (float)j / (float)SCREEN_HEIGHT * 255;
+            u16 color = GPACK_RGBA5551(shade_x, t, shade_y, 1);
+            // u16 color = t;
+            framebuffers[current_fb][i + j * SCREEN_WIDTH] = color;
+        }
+    }
+}
+
+void
+fb_copy_test(void) {
+    for (size_t i = 0; i < SCREEN_HEIGHT * SCREEN_WIDTH; i++) {
+        framebuffers[current_fb][i] = pixels[i];
+    }
+}
+
+void
+rdp_clearfb(u8 r, u8 g, u8 b) {
+    Gfx glist[2048];
+    Gfx *glistp = glist;
+    Gfx clearcfb_dl[] = {
+        gsDPSetCycleType(G_CYC_FILL),
+        gsDPSetColorImage(
+            G_IM_FMT_RGBA, G_IM_SIZ_16b, SCREEN_WIDTH, framebuffers[current_fb]),
+        gsDPSetFillColor(GPACK_RGBA5551(r, g, b, 1)),
+        gsDPFillRectangle(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1),
+        gsSPEndDisplayList(),
+    };
+    gSPDisplayList(glistp++, clearcfb_dl);
+    gDPFullSync(glistp++);
+    gSPEndDisplayList(glistp++);
+
+    // Start up the  task list.
+    OSTask tlist = (OSTask){
+        {
+            .type            = M_GFXTASK,
+            .flags           = OS_TASK_DP_WAIT,
+            .ucode_boot      = (u64*)rspbootTextStart,
+            .ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart,
+            .ucode           = (u64*)gspF3DEX2_xbusTextStart,
+            .ucode_size      = SP_UCODE_SIZE,
+            .ucode_data      = (u64*)gspF3DEX2_xbusDataStart,
+            .ucode_data_size = SP_UCODE_DATA_SIZE,
+            .data_ptr        = (u64*)glist,
+            .data_size       = (u32)((glistp - glist) * sizeof(Gfx)),
+            .dram_stack      = dram_stack,
+            .dram_stack_size = SP_DRAM_STACK_SIZE8,
+        },
+    };
+    osSpTaskStart(&tlist);
+
+    // Wait for RDP completion.
+    osRecvMesg(&rdp_msg_queue, NULL, OS_MESG_BLOCK);
+}
 
 static void
 main_proc(void *arg) {
@@ -65,60 +130,45 @@ main_proc(void *arg) {
     // 9. Trasfer digital data to DAC (Video Interface)
     // 10. Video signal is produced.
 
+    // NOTE: Test image.
+    for (size_t j = 0; j < SCREEN_HEIGHT; j++) {
+        for (size_t i = 0; i < SCREEN_WIDTH; i++) {
+            u16 shade_x = (float)i / (float)SCREEN_WIDTH * 255;
+            u16 shade_y = (float)j / (float)SCREEN_HEIGHT * 255;
+            u16 color = GPACK_RGBA5551(shade_x, 0, shade_y, 1);
+            pixels[i + j * SCREEN_WIDTH] = color;
+        }
+    }
+
+    // Clear the framebuffer with rdp.
+    // rdp_clearfb(0, 0, 0);
+
     // Main loop.
-    int i = 0;
     int increment = 4;
     int direction = increment;
     while (true) {
-        if (i >= 255 - increment) {
+        if (t >= 255 - increment) {
             direction = -increment;
-        } else if (i <= 0) {
+        } if (t <= 0 + increment) {
             direction = +increment;
         }
-        i += direction;
+        t += direction;
 
-        // Graphics command list.
-        // TODO: Check out of bounds when adding elements to the list.
-        Gfx glist[2048];
-        Gfx *glistp = glist;
-
-        // Tell RCP where each segment is.
-        gSPSegment(glistp++, 0, 0x0);    // Physical address segment
-        gSPSegment(glistp++, 2, OS_K0_TO_PHYSICAL(framebuffers[current_fb]));
-
-        // Clear color framebuffer.
-        Gfx clearcfb_dl[] = {
-            gsDPSetCycleType(G_CYC_FILL),
-            gsDPSetColorImage(G_IM_FMT_RGBA, G_IM_SIZ_16b, SCREEN_WIDTH, rsp_framebuffer),
-            gsDPSetFillColor(GPACK_RGBA5551(64, 64, 255, 1) << 16 | GPACK_RGBA5551(i, i, i, 1)),
-            gsDPFillRectangle(0, 0, SCREEN_WIDTH-1, SCREEN_HEIGHT-1),
-            gsSPEndDisplayList(),
-        };
-        gSPDisplayList(glistp++, clearcfb_dl);
-        gDPFullSync(glistp++);
-        gSPEndDisplayList(glistp++);
-
-        // Start up the RSP task list.
-        OSTask tlist = (OSTask){
-            {
-                .type = M_GFXTASK,
-                .flags = OS_TASK_DP_WAIT,
-                .ucode_boot = (u64*) rspbootTextStart,
-                .ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart,
-                .ucode = (u64*)gspF3DEX2_xbusTextStart,
-                .ucode_size = SP_UCODE_SIZE,
-                .ucode_data = (u64*)gspF3DEX2_xbusDataStart,
-                .ucode_data_size = SP_UCODE_DATA_SIZE,
-                .data_ptr = (u64*) glist,
-                .data_size = (u32)((glistp - glist) * sizeof(Gfx)),
-                .dram_stack = dram_stack,
-                .dram_stack_size = SP_DRAM_STACK_SIZE8,
-            },
-        };
-        osSpTaskStart(&tlist);
-
-        // Wait for RDP completion.
-        osRecvMesg(&rdp_msg_queue, NULL, OS_MESG_BLOCK);
+        // A
+        // rdp_clearfb(t, t, t);
+        // osWritebackDCacheAll();
+        // B
+        // fb_write_test();
+        // C
+        for (size_t j = 0; j < SCREEN_HEIGHT; j++) {
+            for (size_t i = 0; i < SCREEN_WIDTH; i++) {
+                u16 shade_x = (float)i / (float)SCREEN_WIDTH * 255;
+                u16 shade_y = (float)j / (float)SCREEN_HEIGHT * 255;
+                u16 color = GPACK_RGBA5551(shade_x, t, shade_y, 1);
+                pixels[i + j * SCREEN_WIDTH] = color;
+            }
+        }
+        fb_copy_test();
 
         // Swap buffers.
         osViSwapBuffer(framebuffers[current_fb]);
