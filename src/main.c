@@ -26,8 +26,14 @@ u64 boot_stack[STACK_SIZE / sizeof(u64)]    __attribute__((aligned(8)));
 //
 
 u16 framebuffers[2][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
+
+//
+// Statics.
+//
+
 static int current_fb = 0;
 static u16 pixels[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
+static Gfx glist[2048 * 8];
 
 //
 // Message buffers and queues.
@@ -70,18 +76,142 @@ fb_copy_test(void) {
 }
 
 void
+rdp_init(void) {
+    Gfx *glistp = glist;
+
+    static const Vp viewport = {{
+        .vscale = {SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2, G_MAXZ / 2, 0},
+        .vtrans = {SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2, G_MAXZ / 2, 0},
+    }};
+
+    // Initialize the RSP.
+    Gfx rspinit_dl[] = {
+        gsSPViewport(&viewport),
+        gsSPClearGeometryMode(G_SHADE | G_SHADING_SMOOTH | G_CULL_BOTH |
+                G_FOG | G_LIGHTING | G_TEXTURE_GEN |
+                G_TEXTURE_GEN_LINEAR | G_LOD),
+        gsSPTexture(0, 0, 0, 0, G_OFF),
+    };
+
+    // Initialize the RDP.
+    Gfx rdpinit_dl[] = {
+        gsDPSetCycleType(G_CYC_1CYCLE),
+        gsDPSetScissor(G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT),
+        gsDPSetCombineKey(G_CK_NONE),
+        gsDPSetAlphaCompare(G_AC_NONE),
+        gsDPSetRenderMode(G_RM_NOOP, G_RM_NOOP2),
+        gsDPSetColorDither(G_CD_DISABLE),
+        gsDPPipeSync(),
+    };
+
+    gSPDisplayList(glistp++, rspinit_dl);
+    gSPDisplayList(glistp++, rdpinit_dl);
+    gDPFullSync(glistp++);
+    gSPEndDisplayList(glistp++);
+
+    // Start up the  task list.
+    OSTask tlist = (OSTask){
+        {
+            .type            = M_GFXTASK,
+            .flags           = OS_TASK_DP_WAIT,
+            .ucode_boot      = (u64*)rspbootTextStart,
+            .ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart,
+            .ucode           = (u64*)gspF3DEX2_xbusTextStart,
+            .ucode_size      = SP_UCODE_SIZE,
+            .ucode_data      = (u64*)gspF3DEX2_xbusDataStart,
+            .ucode_data_size = SP_UCODE_DATA_SIZE,
+            .data_ptr        = (u64*)glist,
+            .data_size       = (u32)((glistp - glist) * sizeof(Gfx)),
+            .dram_stack      = dram_stack,
+            .dram_stack_size = SP_DRAM_STACK_SIZE8,
+        },
+    };
+    osSpTaskStart(&tlist);
+
+    // Wait for RDP completion.
+    osRecvMesg(&rdp_msg_queue, NULL, OS_MESG_BLOCK);
+}
+
+void
 rdp_clearfb(u8 r, u8 g, u8 b) {
-    Gfx glist[2048];
     Gfx *glistp = glist;
     Gfx clearcfb_dl[] = {
         gsDPSetCycleType(G_CYC_FILL),
         gsDPSetColorImage(
             G_IM_FMT_RGBA, G_IM_SIZ_16b, SCREEN_WIDTH, framebuffers[current_fb]),
-        gsDPSetFillColor(GPACK_RGBA5551(r, g, b, 1)),
+        gsDPSetFillColor(
+            GPACK_RGBA5551(r, g, b, 1) << 16 | GPACK_RGBA5551(r, g, b, 1)),
         gsDPFillRectangle(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1),
-        gsSPEndDisplayList(),
+        gsDPPipeSync(),
     };
     gSPDisplayList(glistp++, clearcfb_dl);
+    gDPFullSync(glistp++);
+    gSPEndDisplayList(glistp++);
+
+    // Start up the  task list.
+    OSTask tlist = (OSTask){
+        {
+            .type            = M_GFXTASK,
+            .flags           = OS_TASK_DP_WAIT,
+            .ucode_boot      = (u64*)rspbootTextStart,
+            .ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart,
+            .ucode           = (u64*)gspF3DEX2_xbusTextStart,
+            .ucode_size      = SP_UCODE_SIZE,
+            .ucode_data      = (u64*)gspF3DEX2_xbusDataStart,
+            .ucode_data_size = SP_UCODE_DATA_SIZE,
+            .data_ptr        = (u64*)glist,
+            .data_size       = (u32)((glistp - glist) * sizeof(Gfx)),
+            .dram_stack      = dram_stack,
+            .dram_stack_size = SP_DRAM_STACK_SIZE8,
+        },
+    };
+    osSpTaskStart(&tlist);
+
+    // Wait for RDP completion.
+    osRecvMesg(&rdp_msg_queue, NULL, OS_MESG_BLOCK);
+}
+
+void
+rdp_texture_copy(void) {
+    Gfx *glistp = glist;
+    Gfx dl[] = {
+        gsDPSetTexturePersp(G_TP_NONE),
+        gsDPSetCycleType(G_CYC_COPY),
+        gsDPSetRenderMode(G_RM_NOOP, G_RM_NOOP2),
+        gsSPClearGeometryMode(G_SHADE | G_SHADING_SMOOTH),
+        gsSPTexture(0x2000, 0x2000, 0, G_TX_RENDERTILE, G_ON),
+        gsDPSetCombineMode(G_CC_DECALRGB, G_CC_DECALRGB),
+        gsDPSetTexturePersp(G_TP_NONE),
+        gsDPSetTextureFilter(G_TF_POINT),
+    };
+    gSPDisplayList(glistp++, dl);
+    for (size_t i = 0; i < 240; i++) {
+        gDPLoadTextureBlock(
+                glistp++,
+                &pixels[320 * 1 * i],        // Texture data.
+                G_IM_FMT_RGBA,               // Image format.
+                G_IM_SIZ_16b,                // Pixel component size.
+                320,                         // Width.
+                1,                           // Height.
+                0,                           // Palette location.
+                G_TX_CLAMP,                  // S-axis mirror/wrap/clamp.
+                G_TX_CLAMP,                  // T-axis mirror/wrap/clamp.
+                0,                           // S-axis mask.
+                0,                           // T-axis mask.
+                G_TX_NOLOD,                  // S-axis shift.
+                G_TX_NOLOD);                 // T-axis shift.
+        gSPTextureRectangle(
+                glistp++,
+                0,                    // ulx
+                (1 * i) << 2,         // uly
+                (320 * (i + 1)) << 2, // lrx
+                (1 *   (i + 1)) << 2, // lry
+                0,
+                0,
+                0,
+                4 << 10,
+                1 << 10);
+    }
     gDPFullSync(glistp++);
     gSPEndDisplayList(glistp++);
 
@@ -141,7 +271,7 @@ main_proc(void *arg) {
     }
 
     // Clear the framebuffer with rdp.
-    // rdp_clearfb(0, 0, 0);
+    rdp_init();
 
     // Main loop.
     int increment = 4;
@@ -159,6 +289,7 @@ main_proc(void *arg) {
         // osWritebackDCacheAll();
         // B
         // fb_write_test();
+        // osWritebackDCacheAll();
         // C
         for (size_t j = 0; j < SCREEN_HEIGHT; j++) {
             for (size_t i = 0; i < SCREEN_WIDTH; i++) {
@@ -168,7 +299,12 @@ main_proc(void *arg) {
                 pixels[i + j * SCREEN_WIDTH] = color;
             }
         }
-        fb_copy_test();
+        // osWritebackDCacheAll();
+        // fb_copy_test();
+        // D
+        rdp_texture_copy();
+        // osWritebackDCacheAll();
+        // osWritebackDCacheAll();
 
         // Swap buffers.
         osViSwapBuffer(framebuffers[current_fb]);

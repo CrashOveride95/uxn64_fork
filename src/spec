@@ -10,6 +10,6 @@ beginseg
 endseg
 
 beginwave
-	name "build/onetri"
+	name "build/blank"
 	include "code"
 endwave

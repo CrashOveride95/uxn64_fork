@@ -21,9 +21,6 @@ INC_DIRS    := $(shell find $(SRC_DIR) -type d)
 INC_DIRS    += $(LIBULTRA_INC)
 INC_FLAGS   := $(addprefix -I,$(INC_DIRS))
 
-datafiles = $(SRC_DIR)/static.c $(SRC_DIR)/cfb.c $(SRC_DIR)/rsp_cfb.c
-dataobjects = $(datafiles:.c=.o)
-
 # Output names and executables.
 TARGET := blank
 ELF    := $(BUILD_DIR)/$(TARGET).elf
