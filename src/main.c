@@ -2,10 +2,6 @@
 
 #include "types.h"
 
-// Screen size.
-#define SCREEN_WIDTH  320
-#define SCREEN_HEIGHT 240
-
 // Get a pointer to the start (top) of a stack.
 #define STACK_START(stack) ((stack) + sizeof((stack)))
 
@@ -16,24 +12,9 @@
 #define STACK_SIZE 8 * 1024
 static OSThread idle_thread;
 static OSThread main_thread;
-static u8 idle_thread_stack[STACK_SIZE]     __attribute__((aligned(8)));
-static u8 main_thread_stack[STACK_SIZE]     __attribute__((aligned(8)));
-static u64 dram_stack[SP_DRAM_STACK_SIZE64] __attribute__((aligned(16)));
-u64 boot_stack[STACK_SIZE / sizeof(u64)]    __attribute__((aligned(8)));
-
-//
-// Framebuffers.
-//
-
-u16 framebuffers[2][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
-
-//
-// Statics.
-//
-
-static int current_fb = 0;
-static u16 pixels[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
-static Gfx glist[2048 * 8];
+static u8 idle_thread_stack[STACK_SIZE]  __attribute__((aligned(8)));
+static u8 main_thread_stack[STACK_SIZE]  __attribute__((aligned(8)));
+u64 boot_stack[STACK_SIZE / sizeof(u64)] __attribute__((aligned(8)));
 
 //
 // Message buffers and queues.
@@ -41,283 +22,230 @@ static Gfx glist[2048 * 8];
 
 #define NUM_PI_MSGS 8
 static OSMesg pi_msg[NUM_PI_MSGS];
-static OSMesg rdp_msg_buf, retrace_msg_buf;
-static OSMesgQueue pi_msg_queue;
-static OSMesgQueue rdp_msg_queue;
-static OSMesgQueue retrace_msg_queue;
 
 // Handle for rom memory.
 OSPiHandle *rom_handle;
 
-// DEBUG: animations
-static int t = 0;
+//
+// UXN.
+//
+
+#include "ppu.c"
+#include "uxn/src/uxn.c"
+
+#define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
+
+static Uxn u;
+static Device *devscreen;
+static Device *devctrl;
+static Device *devmouse;
+
+int
+uxn_halt(Uxn *u, Uint8 error, Uint16 addr) {
+    (void)u;
+    (void)error;
+    (void)addr;
+    for (;;) {}
+}
+
+int
+uxn_interrupt(void) {
+    return 1;
+}
+
+static u8
+nil_dei(Device *d, u8 port) {
+    return d->dat[port];
+}
+
+static void
+nil_deo(Device *d, u8 port) {
+    (void)d;
+    (void)port;
+}
+
+static void
+screen_palette(Device *d) {
+    for(size_t i = 0; i < 4; ++i) {
+        u8 r = ((d->dat[0x8 + i / 2] >> (!(i % 2) << 2)) & 0x0f) * 0x11;
+        u8 g = ((d->dat[0xa + i / 2] >> (!(i % 2) << 2)) & 0x0f) * 0x11;
+        u8 b = ((d->dat[0xc + i / 2] >> (!(i % 2) << 2)) & 0x0f) * 0x11;
+
+        palette[i] = GPACK_RGBA5551(r, g, b, 1);
+    }
+    for(size_t i = 4; i < 16; ++i) {
+        palette[i] = palette[i / 4];
+    }
+
+    // Redraw the screen if we change the color palette.
+    reqdraw = 1;
+    redraw_screen();
+}
+
+u8
+system_dei(Device *d, u8 port) {
+	switch(port) {
+	case 0x2: return d->u->wst.ptr;
+	case 0x3: return d->u->rst.ptr;
+	default: return d->dat[port];
+	}
+}
 
 void
-fb_write_test(void) {
-    for (size_t j = 0; j < SCREEN_HEIGHT; j++) {
-        for (size_t i = 0; i < SCREEN_WIDTH; i++) {
-            // u16 shade_x = (float)i / (float)SCREEN_WIDTH * 32;
-            // u16 shade_y = (float)j / (float)SCREEN_HEIGHT * 32;
-            // u16 color = shade_x << 11 | shade_y << 1;
-            u16 shade_x = (float)i / (float)SCREEN_WIDTH * 255;
-            u16 shade_y = (float)j / (float)SCREEN_HEIGHT * 255;
-            u16 color = GPACK_RGBA5551(shade_x, t, shade_y, 1);
-            // u16 color = t;
-            framebuffers[current_fb][i + j * SCREEN_WIDTH] = color;
-        }
+system_deo(Device *d, u8 port) {
+	switch(port) {
+        case 0x2: d->u->wst.ptr = d->dat[port]; break;
+        case 0x3: d->u->rst.ptr = d->dat[port]; break;
+        case 0xe: break;
+        default: {
+            if(port > 0x7 && port < 0xe) {
+                screen_palette(d);
+            }
+        } break;
+	}
+}
+
+static void
+console_deo(Device *d, u8 port) {
+    (void)d;
+    (void)port;
+}
+
+u8
+screen_dei(Device *d, u8 port) {
+    switch(port) {
+        case 0x2: return screen_width >> 8;
+        case 0x3: return screen_width;
+        case 0x4: return screen_height >> 8;
+        case 0x5: return screen_height;
+        default: return d->dat[port];
     }
 }
 
 void
-fb_copy_test(void) {
-    for (size_t i = 0; i < SCREEN_HEIGHT * SCREEN_WIDTH; i++) {
-        framebuffers[current_fb][i] = pixels[i];
+screen_deo(Device *d, u8 port) {
+    switch(port) {
+        // case 0x3:
+        //     if(!FIXED_SIZE) {
+        //         Uint16 w;
+        //         DEVPEEK16(w, 0x2);
+        //         screen_resize(&uxn_screen, clamp(w, 1, 1024), uxn_screen.height);
+        //     }
+        //     break;
+        // case 0x5:
+        //     if(!FIXED_SIZE) {
+        //         Uint16 h;
+        //         DEVPEEK16(h, 0x4);
+        //         screen_resize(&uxn_screen, uxn_screen.width, clamp(h, 1, 1024));
+        //     }
+        //     break;
+        case 0xe: {
+            u16 x, y;
+            u8 layer = d->dat[0xe] & 0x40;
+            DEVPEEK16(x, 0x8);
+            DEVPEEK16(y, 0xa);
+            ppu_pixel(layer ? pixels_fg : pixels_bg, x, y, d->dat[0xe] & 0x3);
+            if(d->dat[0x6] & 0x01) DEVPOKE16(0x8, x + 1); /* auto x+1 */
+            if(d->dat[0x6] & 0x02) DEVPOKE16(0xa, y + 1); /* auto y+1 */
+        } break;
+        case 0xf: {
+            u16 x, y, dx, dy, addr;
+            u8 twobpp = !!(d->dat[0xf] & 0x80);
+            DEVPEEK16(x, 0x8);
+            DEVPEEK16(y, 0xa);
+            DEVPEEK16(addr, 0xc);
+            u8 n = d->dat[0x6] >> 4;
+            dx = (d->dat[0x6] & 0x01) << 3;
+            dy = (d->dat[0x6] & 0x02) << 2;
+            if(addr > 0x10000 - ((n + 1) << (3 + twobpp))) {
+                return;
+            }
+            u8 *layer = (d->dat[0xf] & 0x40) ? pixels_fg : pixels_bg;
+            u8 color = d->dat[0xf] & 0xf;
+            u8 flipx = d->dat[0xf] & 0x10;
+            u8 flipy = d->dat[0xf] & 0x20;
+            for(size_t i = 0; i <= n; i++) {
+                u8 *sprite = &d->u->ram[addr];
+                if (twobpp) {
+                    ppu_2bpp(layer, x + dy * i, y + dx * i, sprite, color, flipx, flipy);
+                } else {
+                    ppu_1bpp(layer, x + dy * i, y + dx * i, sprite, color, flipx, flipy);
+                }
+                addr += (d->dat[0x6] & 0x04) << (1 + twobpp);
+            }
+            DEVPOKE16(0xc, addr);   /* auto addr+length */
+            DEVPOKE16(0x8, x + dx); /* auto x+8 */
+            DEVPOKE16(0xa, y + dy); /* auto y+8 */
+        } break;
+	}
+    reqdraw = 1;
+}
+
+void
+poll_input() {
+    // STUB...
+}
+
+void
+handle_input() {
+    // STUB...
+}
+
+static u8 uxn_ram[0x10000];
+
+#include "uxn_screen_rom.c"
+
+void
+init_uxn(Uxn *u) {
+    // Setup UXN memory.
+	for (size_t i = 0; i < sizeof(uxn_ram); i++) {
+	    uxn_ram[i] = 0;
+	}
+	uxn_boot(u, uxn_ram);
+
+    // Copy rom to VM.
+    // memcpy(u->ram + PAGE_PROGRAM, uxn_rom, sizeof(uxn_rom));
+    u8 *dst = u->ram + PAGE_PROGRAM;
+    u8 *src = (u8*)uxn_rom;
+    for (size_t i = 0; i < sizeof(uxn_rom); i++) {
+        dst[i] = src[i];
     }
-}
 
-void
-rdp_init(void) {
-    Gfx *glistp = glist;
-
-    static const Vp viewport = {{
-        .vscale = {SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2, G_MAXZ / 2, 0},
-        .vtrans = {SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2, G_MAXZ / 2, 0},
-    }};
-
-    // Initialize the RSP.
-    Gfx rspinit_dl[] = {
-        gsSPViewport(&viewport),
-        gsSPClearGeometryMode(G_SHADE | G_SHADING_SMOOTH | G_CULL_BOTH |
-                G_FOG | G_LIGHTING | G_TEXTURE_GEN |
-                G_TEXTURE_GEN_LINEAR | G_LOD),
-        gsSPTexture(0, 0, 0, 0, G_OFF),
-    };
-
-    // Initialize the RDP.
-    Gfx rdpinit_dl[] = {
-        gsDPSetCycleType(G_CYC_1CYCLE),
-        gsDPSetScissor(G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT),
-        gsDPSetCombineKey(G_CK_NONE),
-        gsDPSetAlphaCompare(G_AC_NONE),
-        gsDPSetRenderMode(G_RM_NOOP, G_RM_NOOP2),
-        gsDPSetColorDither(G_CD_DISABLE),
-        gsDPPipeSync(),
-    };
-
-    gSPDisplayList(glistp++, rspinit_dl);
-    gSPDisplayList(glistp++, rdpinit_dl);
-    gDPFullSync(glistp++);
-    gSPEndDisplayList(glistp++);
-
-    // Start up the  task list.
-    OSTask tlist = (OSTask){
-        {
-            .type            = M_GFXTASK,
-            .flags           = OS_TASK_DP_WAIT,
-            .ucode_boot      = (u64*)rspbootTextStart,
-            .ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart,
-            .ucode           = (u64*)gspF3DEX2_xbusTextStart,
-            .ucode_size      = SP_UCODE_SIZE,
-            .ucode_data      = (u64*)gspF3DEX2_xbusDataStart,
-            .ucode_data_size = SP_UCODE_DATA_SIZE,
-            .data_ptr        = (u64*)glist,
-            .data_size       = (u32)((glistp - glist) * sizeof(Gfx)),
-            .dram_stack      = dram_stack,
-            .dram_stack_size = SP_DRAM_STACK_SIZE8,
-        },
-    };
-    osSpTaskStart(&tlist);
-
-    // Wait for RDP completion.
-    osRecvMesg(&rdp_msg_queue, NULL, OS_MESG_BLOCK);
-}
-
-void
-rdp_clearfb(u8 r, u8 g, u8 b) {
-    Gfx *glistp = glist;
-    Gfx clearcfb_dl[] = {
-        gsDPSetCycleType(G_CYC_FILL),
-        gsDPSetColorImage(
-            G_IM_FMT_RGBA, G_IM_SIZ_16b, SCREEN_WIDTH, framebuffers[current_fb]),
-        gsDPSetFillColor(
-            GPACK_RGBA5551(r, g, b, 1) << 16 | GPACK_RGBA5551(r, g, b, 1)),
-        gsDPFillRectangle(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1),
-        gsDPPipeSync(),
-    };
-    gSPDisplayList(glistp++, clearcfb_dl);
-    gDPFullSync(glistp++);
-    gSPEndDisplayList(glistp++);
-
-    // Start up the  task list.
-    OSTask tlist = (OSTask){
-        {
-            .type            = M_GFXTASK,
-            .flags           = OS_TASK_DP_WAIT,
-            .ucode_boot      = (u64*)rspbootTextStart,
-            .ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart,
-            .ucode           = (u64*)gspF3DEX2_xbusTextStart,
-            .ucode_size      = SP_UCODE_SIZE,
-            .ucode_data      = (u64*)gspF3DEX2_xbusDataStart,
-            .ucode_data_size = SP_UCODE_DATA_SIZE,
-            .data_ptr        = (u64*)glist,
-            .data_size       = (u32)((glistp - glist) * sizeof(Gfx)),
-            .dram_stack      = dram_stack,
-            .dram_stack_size = SP_DRAM_STACK_SIZE8,
-        },
-    };
-    osSpTaskStart(&tlist);
-
-    // Wait for RDP completion.
-    osRecvMesg(&rdp_msg_queue, NULL, OS_MESG_BLOCK);
-}
-
-void
-rdp_texture_copy(void) {
-    Gfx *glistp = glist;
-    Gfx dl[] = {
-        gsDPSetTexturePersp(G_TP_NONE),
-        gsDPSetCycleType(G_CYC_COPY),
-        gsDPSetRenderMode(G_RM_NOOP, G_RM_NOOP2),
-        gsSPClearGeometryMode(G_SHADE | G_SHADING_SMOOTH),
-        gsSPTexture(0x2000, 0x2000, 0, G_TX_RENDERTILE, G_ON),
-        gsDPSetCombineMode(G_CC_DECALRGB, G_CC_DECALRGB),
-        gsDPSetTexturePersp(G_TP_NONE),
-        gsDPSetTextureFilter(G_TF_POINT),
-    };
-    gSPDisplayList(glistp++, dl);
-    for (size_t i = 0; i < 240; i++) {
-        gDPLoadTextureBlock(
-                glistp++,
-                &pixels[320 * 1 * i],        // Texture data.
-                G_IM_FMT_RGBA,               // Image format.
-                G_IM_SIZ_16b,                // Pixel component size.
-                320,                         // Width.
-                1,                           // Height.
-                0,                           // Palette location.
-                G_TX_CLAMP,                  // S-axis mirror/wrap/clamp.
-                G_TX_CLAMP,                  // T-axis mirror/wrap/clamp.
-                0,                           // S-axis mask.
-                0,                           // T-axis mask.
-                G_TX_NOLOD,                  // S-axis shift.
-                G_TX_NOLOD);                 // T-axis shift.
-        gSPTextureRectangle(
-                glistp++,
-                0,                    // ulx
-                (1 * i) << 2,         // uly
-                (320 * (i + 1)) << 2, // lrx
-                (1 *   (i + 1)) << 2, // lry
-                0,
-                0,
-                0,
-                4 << 10,
-                1 << 10);
-    }
-    gDPFullSync(glistp++);
-    gSPEndDisplayList(glistp++);
-
-    // Start up the  task list.
-    OSTask tlist = (OSTask){
-        {
-            .type            = M_GFXTASK,
-            .flags           = OS_TASK_DP_WAIT,
-            .ucode_boot      = (u64*)rspbootTextStart,
-            .ucode_boot_size = (u32)rspbootTextEnd - (u32)rspbootTextStart,
-            .ucode           = (u64*)gspF3DEX2_xbusTextStart,
-            .ucode_size      = SP_UCODE_SIZE,
-            .ucode_data      = (u64*)gspF3DEX2_xbusDataStart,
-            .ucode_data_size = SP_UCODE_DATA_SIZE,
-            .data_ptr        = (u64*)glist,
-            .data_size       = (u32)((glistp - glist) * sizeof(Gfx)),
-            .dram_stack      = dram_stack,
-            .dram_stack_size = SP_DRAM_STACK_SIZE8,
-        },
-    };
-    osSpTaskStart(&tlist);
-
-    // Wait for RDP completion.
-    osRecvMesg(&rdp_msg_queue, NULL, OS_MESG_BLOCK);
+    // Prepare devices.
+    /* system   */ uxn_port(u, 0x0, system_dei, system_deo);
+    /* console  */ uxn_port(u, 0x1, nil_dei, console_deo);
+    /* screen   */ devscreen = uxn_port(u, 0x2, screen_dei, screen_deo);
+    /* audio0   */ uxn_port(u, 0x3, nil_dei, nil_deo);
+    /* audio1   */ uxn_port(u, 0x4, nil_dei, nil_deo);
+    /* audio2   */ uxn_port(u, 0x5, nil_dei, nil_deo);
+    /* audio3   */ uxn_port(u, 0x6, nil_dei, nil_deo);
+    /* unused   */ uxn_port(u, 0x7, nil_dei, nil_deo);
+    /* control  */ devctrl = uxn_port(u, 0x8, nil_dei, nil_deo);
+    /* mouse    */ devmouse = uxn_port(u, 0x9, nil_dei, nil_deo);
+    /* file0    */ uxn_port(u, 0xa, nil_dei, nil_deo);
+    /* file1    */ uxn_port(u, 0xb, nil_dei, nil_deo);
+    /* datetime */ uxn_port(u, 0xc, nil_dei, nil_deo);
+    /* unused   */ uxn_port(u, 0xd, nil_dei, nil_deo);
+    /* unused   */ uxn_port(u, 0xe, nil_dei, nil_deo);
+    /* unused   */ uxn_port(u, 0xf, nil_dei, nil_deo);
+    uxn_eval(u, PAGE_PROGRAM);
 }
 
 static void
 main_proc(void *arg) {
     (void)arg;
 
-    // Setup the message queues
-    osCreateMesgQueue(&rdp_msg_queue, &rdp_msg_buf, 1);
-    osSetEventMesg(OS_EVENT_DP, &rdp_msg_queue, NULL);
-    osCreateMesgQueue(&retrace_msg_queue, &retrace_msg_buf, 1);
-    osViSetEvent(&retrace_msg_queue, NULL, 1);
+    init_ppu();
 
-    // NOTE: Graphics drawing pipeline:
-    // 1. Transfer gfx data from ROM to RDRAM (CPU -- N64 OS)
-    // 2. Create display list in RDRAM from img data (CPU -- Game application)
-    // 3. Transfer display list and graphics microcode to the RSP (CPU -- N64 OS)
-    // 4. Conversion process (RSP -- GFX microcode)
-    // 5. Transfer converted data to RDP (RSP -- GFX microcode)
-    // 6. Manipulation process (RDP)
-    // 7. Transfer manipulated data to framebuffer (RDP)
-    // 8. Transfer manipulated data to the video interface (CPU -- N64 OS)
-    // 9. Trasfer digital data to DAC (Video Interface)
-    // 10. Video signal is produced.
-
-    // NOTE: Test image.
-    for (size_t j = 0; j < SCREEN_HEIGHT; j++) {
-        for (size_t i = 0; i < SCREEN_WIDTH; i++) {
-            u16 shade_x = (float)i / (float)SCREEN_WIDTH * 255;
-            u16 shade_y = (float)j / (float)SCREEN_HEIGHT * 255;
-            u16 color = GPACK_RGBA5551(shade_x, 0, shade_y, 1);
-            pixels[i + j * SCREEN_WIDTH] = color;
-        }
-    }
-
-    // Clear the framebuffer with rdp.
-    rdp_init();
+    init_uxn(&u);
 
     // Main loop.
-    int increment = 4;
-    int direction = increment;
     while (true) {
-        if (t >= 255 - increment) {
-            direction = -increment;
-        } if (t <= 0 + increment) {
-            direction = +increment;
-        }
-        t += direction;
-
-        // A
-        // rdp_clearfb(t, t, t);
-        // osWritebackDCacheAll();
-        // B
-        // fb_write_test();
-        // osWritebackDCacheAll();
-        // C
-        for (size_t j = 0; j < SCREEN_HEIGHT; j++) {
-            for (size_t i = 0; i < SCREEN_WIDTH; i++) {
-                u16 shade_x = (float)i / (float)SCREEN_WIDTH * 255;
-                u16 shade_y = (float)j / (float)SCREEN_HEIGHT * 255;
-                u16 color = GPACK_RGBA5551(shade_x, t, shade_y, 1);
-                pixels[i + j * SCREEN_WIDTH] = color;
-            }
-        }
-        // osWritebackDCacheAll();
-        // fb_copy_test();
-        // D
-        rdp_texture_copy();
-        // osWritebackDCacheAll();
-        // osWritebackDCacheAll();
-
-        // Swap buffers.
-        osViSwapBuffer(framebuffers[current_fb]);
-
-        // Make sure there isn't an old retrace in queue
-        // (assumes queue has a depth of 1).
-        if (MQ_IS_FULL(&retrace_msg_queue)) {
-            osRecvMesg(&retrace_msg_queue, NULL, OS_MESG_BLOCK);
-        }
-
-        // Wait for Vertical retrace to finish swap buffers.
-        osRecvMesg(&retrace_msg_queue, NULL, OS_MESG_BLOCK);
-        current_fb ^= 1;
+        poll_input();
+        handle_input();
+        uxn_eval(&u, GETVECTOR(devscreen));
+        blit_framebuffer();
+        swap_buffers();
     }
 }
 
