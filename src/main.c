@@ -12,12 +12,19 @@ extern u8 _idle_thread_stack[];
 extern u8 _main_thread_stack[];
 
 //
-// Message buffers and queues.
+// Message buffers, queues and devices.
 //
 
 #define NUM_PI_MSGS 8
 static OSMesg pi_msg[NUM_PI_MSGS];
 static OSMesgQueue pi_msg_queue;
+
+#define NUM_CONTROLLERS 4
+static OSMesg ctrl_msg[1];
+static OSMesgQueue ctrl_msg_queue;
+static OSContStatus ctrl_status[NUM_CONTROLLERS];
+static OSContPad ctrl_pad[NUM_CONTROLLERS];
+static u8 ctrl_bitpattern;
 
 // Handle for rom memory.
 OSPiHandle *rom_handle;
@@ -33,10 +40,18 @@ OSPiHandle *rom_handle;
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
+static u8 uxn_ram[0x10000];
 static Uxn u;
 static Device *devscreen;
 static Device *devctrl;
 static Device *devmouse;
+
+#define MOUSE_DELTA 1
+typedef struct Mouse {
+    s32 x;
+    s32 y;
+    // TODO: mouse timeout?
+} Mouse;
 
 int
 uxn_halt(Uxn *u, Uint8 error, Uint16 addr) {
@@ -180,7 +195,18 @@ screen_deo(Device *d, u8 port) {
 }
 
 void
-poll_input() {
+init_ctrl(void) {
+    osCreateMesgQueue(&ctrl_msg_queue, ctrl_msg, 1);
+    osSetEventMesg(OS_EVENT_SI, &ctrl_msg_queue, NULL);
+    osContInit(&ctrl_msg_queue, &ctrl_bitpattern, &ctrl_status[0]);
+}
+
+void
+handle_input(int i) {
+    // RESET?
+    // devctrl->dat[2] = 0;
+    // uxn_eval(&u, GETVECTOR(devctrl));
+    // devctrl->dat[3] = 0;
     // NOTE:
     // - Analog can act as a mouse and/or dissapear if it was not moved in
     // X seconds. L/R buttons act as the mouse buttons.
@@ -188,15 +214,83 @@ poll_input() {
     // - MAYBE: The C buttons can control the keyboard somehow? A virtual
     // keyboard that is? With Z to confirm keypresses?
     // - Start can just pause the application if no other use is in place.
-    // STUB...
+    OSContPad prev_pad = ctrl_pad[i];
+    osContGetReadData(&ctrl_pad[i]);
+    OSContPad current_pad = ctrl_pad[i];
+    // TODO: Check for controller changes.
+    if (prev_pad.button != current_pad.button) {
+        u8 *uxn_ctrl = &devctrl->dat[2];
+        if (current_pad.button & U_JPAD || current_pad.button & U_CBUTTONS) {
+            *uxn_ctrl |= 0x10;
+        } else {
+            *uxn_ctrl &= ~0x10;
+        }
+        if (current_pad.button & D_JPAD || current_pad.button & D_CBUTTONS) {
+            *uxn_ctrl |= 0x20;
+        } else {
+            *uxn_ctrl &= ~0x20;
+        }
+        if (current_pad.button & L_JPAD || current_pad.button & L_CBUTTONS) {
+            *uxn_ctrl |= 0x40;
+        } else {
+            *uxn_ctrl &= ~0x40;
+        }
+        if (current_pad.button & R_JPAD || current_pad.button & R_CBUTTONS) {
+            *uxn_ctrl |= 0x80;
+        } else {
+            *uxn_ctrl &= ~0x80;
+        }
+        if (current_pad.button & A_BUTTON) {
+            *uxn_ctrl |= 0x01;
+        } else {
+            *uxn_ctrl &= ~0x01;
+        }
+        if (current_pad.button & B_BUTTON) {
+            *uxn_ctrl |= 0x02;
+        } else {
+            *uxn_ctrl &= ~0x02;
+        }
+        if (current_pad.button & START_BUTTON) {
+            *uxn_ctrl |= 0x08;
+        } else {
+            *uxn_ctrl &= ~0x08;
+        }
+        if (current_pad.button & Z_TRIG) {
+            *uxn_ctrl |= 0x04;
+        } else {
+            *uxn_ctrl &= ~0x04;
+        }
+        uxn_eval(&u, GETVECTOR(devctrl));
+        devctrl->dat[3] = 0;
+        // TODO: L/R mouse ? || stick x || xtick y || errno?
+    }
+    // TODO: Check for "mouse" changes.
+    // if (controller_now != in.controller) {
+    //     devctrl->dat[2] = controller_now;
+    //     uxn_eval(&u, GETVECTOR(devctrl));
+    //     in.controller = controller_now;
+    // }
 }
 
 void
-handle_input() {
-    // STUB...
-}
+poll_input() {
+    // Get current ctrl status.
+    osContStartQuery(&ctrl_msg_queue);
+    osRecvMesg(&ctrl_msg_queue, NULL, OS_MESG_BLOCK);
 
-static u8 uxn_ram[0x10000];
+    // Reads the data from the first active controller.
+    for(int i = 0; i < NUM_CONTROLLERS; i++){
+        osContGetQuery(&ctrl_status[i]);
+        if(((ctrl_bitpattern >> i) & 1) && (ctrl_status[i].errno == 0)){
+            if((ctrl_status[i].type & CONT_TYPE_MASK) == CONT_TYPE_NORMAL){
+                osContStartReadData(&ctrl_msg_queue);
+                osRecvMesg(&ctrl_msg_queue, NULL, OS_MESG_BLOCK);
+                handle_input(i);
+                break;
+            }
+        }
+    }
+}
 
 void
 init_uxn(Uxn *u) {
@@ -237,15 +331,13 @@ init_uxn(Uxn *u) {
 static void
 main_proc(void *arg) {
     (void)arg;
-
     init_ppu();
-
+    init_ctrl();
     init_uxn(&u);
 
     // Main loop.
     while (true) {
         poll_input();
-        handle_input();
         uxn_eval(&u, GETVECTOR(devscreen));
         blit_framebuffer();
         swap_buffers();

@@ -149,6 +149,12 @@ blit_framebuffer(void) {
         }
         dirty_lines[j] = 0;
     }
-    fb_copy_test(); // CPU blit
+    // FIXME: This is a hack, we should only have to write to the framebuffer
+    // once, if there were actually no changes is better not to swap buffers at
+    // all right?
+    fb_copy_test(); // CPU blit (A)
+    current_fb ^= 1;
+    fb_copy_test(); // CPU blit (B)
+    current_fb ^= 1;
     reqdraw = 0;
 }

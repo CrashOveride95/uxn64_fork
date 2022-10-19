@@ -8,6 +8,7 @@ SDK_BIN      := $(SDK_BASE)/bin
 LIBULTRA_DIR := $(SDK_BASE)/libultra
 LIBULTRA_INC := $(LIBULTRA_DIR)/usr/include
 LIBULTRA     := $(LIBULTRA_DIR)/usr/lib/libgultra.a
+EMULATOR     := ares
 
 # Source code location and files to watch for changes.
 SRC_DIR     := src
@@ -71,8 +72,7 @@ $(BIN): $(ELF) $(OBJECTS) $(WATCH_SRC) | $(BUILD_DIR)
 
 # Test the output .n64 in an emulator.
 run: $(BIN)
-	# TODO: Test roms with MAME or cen64 instead of mupen64 for better accuracy.
-	mupen64plus $(BIN)
+	$(EMULATOR) $(BIN)
 
 # Remove build directory.
 clean:
