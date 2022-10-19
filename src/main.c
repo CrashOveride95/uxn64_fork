@@ -36,7 +36,7 @@ OSPiHandle *rom_handle;
 #include "ppu.c"
 #include "uxn/src/uxn.c"
 
-#include "uxn_polycat_rom.c"
+#include "uxn_noodle_rom.c"
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
@@ -306,8 +306,8 @@ handle_input(int i) {
     // Check for "mouse" x/y changes.
     if (current_pad.stick_x != 0 || current_pad.stick_y != 0) {
         Device *d = devmouse;
-        mouse.x = CLAMP(mouse.x + prev_pad.stick_x / 4, 0, screen_width);
-        mouse.y = CLAMP(mouse.y - prev_pad.stick_y / 4, 0, screen_height);
+        mouse.x = CLAMP(mouse.x + prev_pad.stick_x / 8, 0, (s32)screen_width);
+        mouse.y = CLAMP(mouse.y - prev_pad.stick_y / 8, 0, (s32)screen_height);
         DEVPOKE16(0x2, mouse.x);
         DEVPOKE16(0x4, mouse.y);
         update_mouse = true;
