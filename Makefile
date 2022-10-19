@@ -12,11 +12,15 @@ LIBULTRA     := $(LIBULTRA_DIR)/usr/lib/libgultra.a
 # Source code location and files to watch for changes.
 SRC_DIR     := src
 BUILD_DIR   := build
-SRC_MAIN    := $(SRC_DIR)/main.c
+SRC_MAIN    := $(SRC_DIR)/main.c $(SRC_DIR)/entry.s
+SRC_LN      := $(SRC_DIR)/linker.ld
 SRC_OBJ     :=
 OBJECTS     := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRC_OBJ))
-
-WATCH_SRC   := $(shell find $(SRC_DIR) -name "*.c" -or -name "*.s" -or -name "*.h")
+WATCH_SRC   := $(shell find $(SRC_DIR) \
+			   -name "*.c" -or \
+			   -name "*.s" -or \
+			   -name "*.h" -or \
+			   -name "**.ld")
 INC_DIRS    := $(shell find $(SRC_DIR) -type d)
 INC_DIRS    += $(LIBULTRA_INC)
 INC_FLAGS   := $(addprefix -I,$(INC_DIRS))
@@ -31,8 +35,8 @@ CC       := $(SDK_BIN)/mips32-elf-gcc
 LD       := $(SDK_BIN)/mips32-elf-ld
 AS       := $(SDK_BIN)/mips32-elf-as
 OBJDUMP  := $(SDK_BIN)/mips32-elf-objdump
+OBJCOPY  := $(SDK_BIN)/mips32-elf-objcopy
 # TODO: Replace with internal tools to avoid dependencies.
-SPICY    := $(SDK_BIN)/spicy
 MAKEMASK := $(SDK_BIN)/makemask
 
 # Compiler and linker configuration.
@@ -40,8 +44,8 @@ CFLAGS         := -Wall -Wextra -pedantic
 CFLAGS         += -mabi=32 -mfix4300
 CFLAGS         += -ffreestanding -G 0
 CFLAGS         += $(INC_FLAGS)
-CFLAGS         += -DF3DEX_GBI_2 -nostdlib -r
-LDFLAGS        := -nostdlib -r
+CFLAGS         += -DF3DEX_GBI_2
+LDFLAGS        := -nostdlib
 LDLIBS         := $(LIBULTRA) $(SDK_BASE)/lib/gcc/mips32-elf/13.0.0/libgcc.a
 RELEASE_CFLAGS := -O2 -DNDEBUG -D_FINALROM
 DEBUG_CFLAGS   := -O0 -DDEBUG -D_FINALROM
@@ -59,15 +63,10 @@ endif
 main: $(BIN)
 
 $(ELF): $(SRC_MAIN) $(WATCH_SRC) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRC_MAIN) $(LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(ELF) -T $(SRC_LN) $(SRC_MAIN) $(LDLIBS)
 
 $(BIN): $(ELF) $(OBJECTS) $(WATCH_SRC) | $(BUILD_DIR)
-	$(SPICY) -r $@ $(SRC_DIR)/spec \
-		--as_command="$(SDK_BIN)/mips32-elf-as" \
-		--cpp_command="$(SDK_BIN)/mips32-elf-gcc" \
-		--ld_command="$(SDK_BIN)/mips32-elf-ld" \
-		--objcopy_command="$(SDK_BIN)/mips32-elf-objcopy"
-	rm a.out
+	$(OBJCOPY) -O binary $< $@
 	$(MAKEMASK) $(BIN)
 
 # Test the output .n64 in an emulator.
@@ -86,3 +85,7 @@ $(BUILD_DIR):
 # Inference rules for C files.
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@
+
+# Inference rules for assembly files.
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.s | $(BUILD_DIR)
+	$(AS) $(AFLAGS) -o $@ -c $<

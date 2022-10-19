@@ -2,19 +2,14 @@
 
 #include "types.h"
 
-// Get a pointer to the start (top) of a stack.
-#define STACK_START(stack) ((stack) + sizeof((stack)))
-
 //
 // Threads and stacks.
 //
 
-#define STACK_SIZE 8 * 1024
 static OSThread idle_thread;
 static OSThread main_thread;
-static u8 idle_thread_stack[STACK_SIZE]  __attribute__((aligned(8)));
-static u8 main_thread_stack[STACK_SIZE]  __attribute__((aligned(8)));
-u64 boot_stack[STACK_SIZE / sizeof(u64)] __attribute__((aligned(8)));
+extern u8 _idle_thread_stack[];
+extern u8 _main_thread_stack[];
 
 //
 // Message buffers and queues.
@@ -268,7 +263,7 @@ idle_proc(void *arg) {
     osCreatePiManager((OSPri)OS_PRIORITY_PIMGR, &pi_msg_queue, pi_msg, NUM_PI_MSGS);
 
     // Create main thread.
-    osCreateThread(&main_thread, 3, main_proc, NULL, STACK_START(main_thread_stack), 10);
+    osCreateThread(&main_thread, 3, main_proc, NULL, _main_thread_stack, 10);
     osStartThread(&main_thread);
 
     // Become the idle thread.
@@ -281,6 +276,6 @@ void
 boot(void) {
     osInitialize();
     rom_handle = osCartRomInit();
-    osCreateThread(&idle_thread, 1, idle_proc, NULL, STACK_START(idle_thread_stack), 10);
+    osCreateThread(&idle_thread, 1, idle_proc, NULL, _idle_thread_stack, 10);
     osStartThread(&idle_thread);
 }
