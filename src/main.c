@@ -36,7 +36,7 @@ OSPiHandle *rom_handle;
 #include "ppu.c"
 #include "uxn/src/uxn.c"
 
-#include "uxn_controller_rom.c"
+#include "uxn_polycat_rom.c"
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
@@ -50,8 +50,11 @@ static Device *devmouse;
 typedef struct Mouse {
     s32 x;
     s32 y;
+    u8 buttons;
     // TODO: mouse timeout?
 } Mouse;
+
+static Mouse mouse = {0};
 
 int
 uxn_halt(Uxn *u, Uint8 error, Uint16 addr) {
@@ -217,59 +220,113 @@ handle_input(int i) {
     OSContPad prev_pad = ctrl_pad[i];
     osContGetReadData(&ctrl_pad[i]);
     OSContPad current_pad = ctrl_pad[i];
-    // TODO: Check for controller changes.
+    if (current_pad.errno != 0) {
+        return;
+    }
+    bool update_ctrl = false;
+    bool update_mouse = false;
+
+    // Check for controller changes.
     if (prev_pad.button != current_pad.button) {
         u8 *uxn_ctrl = &devctrl->dat[2];
         if (current_pad.button & U_JPAD || current_pad.button & U_CBUTTONS) {
             *uxn_ctrl |= 0x10;
+            update_ctrl = true;
         } else {
             *uxn_ctrl &= ~0x10;
+            update_ctrl = true;
         }
         if (current_pad.button & D_JPAD || current_pad.button & D_CBUTTONS) {
             *uxn_ctrl |= 0x20;
+            update_ctrl = true;
         } else {
             *uxn_ctrl &= ~0x20;
+            update_ctrl = true;
         }
         if (current_pad.button & L_JPAD || current_pad.button & L_CBUTTONS) {
             *uxn_ctrl |= 0x40;
+            update_ctrl = true;
         } else {
             *uxn_ctrl &= ~0x40;
+            update_ctrl = true;
         }
         if (current_pad.button & R_JPAD || current_pad.button & R_CBUTTONS) {
             *uxn_ctrl |= 0x80;
+            update_ctrl = true;
         } else {
             *uxn_ctrl &= ~0x80;
+            update_ctrl = true;
         }
         if (current_pad.button & A_BUTTON) {
             *uxn_ctrl |= 0x01;
+            update_ctrl = true;
         } else {
             *uxn_ctrl &= ~0x01;
+            update_ctrl = true;
         }
         if (current_pad.button & B_BUTTON) {
             *uxn_ctrl |= 0x02;
+            update_ctrl = true;
         } else {
             *uxn_ctrl &= ~0x02;
+            update_ctrl = true;
         }
         if (current_pad.button & START_BUTTON) {
             *uxn_ctrl |= 0x08;
+            update_ctrl = true;
         } else {
             *uxn_ctrl &= ~0x08;
+            update_ctrl = true;
         }
         if (current_pad.button & Z_TRIG) {
             *uxn_ctrl |= 0x04;
+            update_ctrl = true;
         } else {
             *uxn_ctrl &= ~0x04;
+            update_ctrl = true;
         }
+
+        // Check for mouse button changes (L/R on the pad).
+        if (current_pad.button & L_TRIG) {
+            mouse.buttons |= 0x01;
+            update_mouse = true;
+        } else {
+            mouse.buttons &= ~0x01;
+            update_mouse = true;
+        }
+        if (current_pad.button & R_TRIG) {
+            mouse.buttons |= 0x10;
+            update_mouse = true;
+        } else {
+            mouse.buttons &= ~0x10;
+            update_mouse = true;
+        }
+    }
+
+    // Check for "mouse" x/y changes.
+    if (current_pad.stick_x != 0 || current_pad.stick_y != 0) {
+        Device *d = devmouse;
+        mouse.x = CLAMP(mouse.x + prev_pad.stick_x / 4, 0, screen_width);
+        mouse.y = CLAMP(mouse.y - prev_pad.stick_y / 4, 0, screen_height);
+        DEVPOKE16(0x2, mouse.x);
+        DEVPOKE16(0x4, mouse.y);
+        update_mouse = true;
+    }
+
+    if (update_ctrl) {
         uxn_eval(&u, GETVECTOR(devctrl));
         devctrl->dat[3] = 0;
-        // TODO: L/R mouse ? || stick x || xtick y || errno?
     }
-    // TODO: Check for "mouse" changes.
-    // if (controller_now != in.controller) {
-    //     devctrl->dat[2] = controller_now;
-    //     uxn_eval(&u, GETVECTOR(devctrl));
-    //     in.controller = controller_now;
-    // }
+    if (update_mouse) {
+        devmouse->dat[6] = mouse.buttons;
+        if(mouse.buttons == 0x10 && (devmouse->dat[6] & 0x01)) {
+            devmouse->dat[7] = 0x01;
+        }
+        if(mouse.buttons == 0x01 && (devmouse->dat[6] & 0x10)) {
+            devmouse->dat[7] = 0x10;
+        }
+        uxn_eval(&u, GETVECTOR(devmouse));
+    }
 }
 
 void
