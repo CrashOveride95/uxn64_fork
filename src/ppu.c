@@ -128,8 +128,6 @@ swap_buffers(void) {
         osRecvMesg(&retrace_msg_queue, NULL, OS_MESG_BLOCK);
     }
     osRecvMesg(&retrace_msg_queue, NULL, OS_MESG_BLOCK);
-
-    current_fb ^= 1;
 }
 
 void
@@ -143,18 +141,11 @@ blit_framebuffer(void) {
             for (size_t i = 0; i < screen_width; i++) {
                 size_t idx = i + j * screen_width;
                 pixels[idx] = palette[pixels_fg[idx] << 2 | pixels_bg[idx]];
-                // TODO: write pixels directly? It may cause flickering.
-                // framebuffers[current_fb][idx] = palette[pixels_fg[idx] << 2 | pixels_bg[idx]];
             }
         }
         dirty_lines[j] = 0;
     }
-    // FIXME: This is a hack, we should only have to write to the framebuffer
-    // once, if there were actually no changes is better not to swap buffers at
-    // all right?
-    fb_copy_test(); // CPU blit (A)
     current_fb ^= 1;
-    fb_copy_test(); // CPU blit (B)
-    current_fb ^= 1;
+    fb_copy_test();
     reqdraw = 0;
 }
