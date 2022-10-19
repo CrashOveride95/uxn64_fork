@@ -22,7 +22,7 @@ INC_DIRS    += $(LIBULTRA_INC)
 INC_FLAGS   := $(addprefix -I,$(INC_DIRS))
 
 # Output names and executables.
-TARGET := blank
+TARGET := uxn64
 ELF    := $(BUILD_DIR)/$(TARGET).elf
 BIN    := $(BUILD_DIR)/$(TARGET).n64
 
@@ -56,12 +56,12 @@ else
     CFLAGS += $(RELEASE_CFLAGS)
 endif
 
-main: $(BUILD_DIR) $(BIN)
+main: $(BIN)
 
-$(ELF): $(SRC_MAIN) $(WATCH_SRC)
+$(ELF): $(SRC_MAIN) $(WATCH_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRC_MAIN) $(LDLIBS)
 
-$(BIN): $(ELF) $(OBJECTS) $(WATCH_SRC)
+$(BIN): $(ELF) $(OBJECTS) $(WATCH_SRC) | $(BUILD_DIR)
 	$(SPICY) -r $@ $(SRC_DIR)/spec \
 		--as_command="$(SDK_BIN)/mips32-elf-as" \
 		--cpp_command="$(SDK_BIN)/mips32-elf-gcc" \
@@ -71,7 +71,7 @@ $(BIN): $(ELF) $(OBJECTS) $(WATCH_SRC)
 	$(MAKEMASK) $(BIN)
 
 # Test the output .n64 in an emulator.
-run: $(BUILD_DIR) $(BIN)
+run: $(BIN)
 	# TODO: Test roms with MAME or cen64 instead of mupen64 for better accuracy.
 	mupen64plus $(BIN)
 
@@ -84,5 +84,5 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 # Inference rules for C files.
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@

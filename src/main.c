@@ -22,6 +22,7 @@ u64 boot_stack[STACK_SIZE / sizeof(u64)] __attribute__((aligned(8)));
 
 #define NUM_PI_MSGS 8
 static OSMesg pi_msg[NUM_PI_MSGS];
+static OSMesgQueue pi_msg_queue;
 
 // Handle for rom memory.
 OSPiHandle *rom_handle;
@@ -32,6 +33,8 @@ OSPiHandle *rom_handle;
 
 #include "ppu.c"
 #include "uxn/src/uxn.c"
+
+#include "uxn_controller_rom.c"
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
@@ -183,6 +186,13 @@ screen_deo(Device *d, u8 port) {
 
 void
 poll_input() {
+    // NOTE:
+    // - Analog can act as a mouse and/or dissapear if it was not moved in
+    // X seconds. L/R buttons act as the mouse buttons.
+    // - DPAD + A/B are the regular controller. (Start/select?)
+    // - MAYBE: The C buttons can control the keyboard somehow? A virtual
+    // keyboard that is? With Z to confirm keypresses?
+    // - Start can just pause the application if no other use is in place.
     // STUB...
 }
 
@@ -192,8 +202,6 @@ handle_input() {
 }
 
 static u8 uxn_ram[0x10000];
-
-#include "uxn_screen_rom.c"
 
 void
 init_uxn(Uxn *u) {

@@ -3,13 +3,13 @@ beginseg
 	flags BOOT OBJECT
 	entry boot
 	stack boot_stack + STACK_SIZE
-	include "build/blank.elf"
+	include "build/uxn64.elf"
 	include "/opt/n64sdk/libultra/usr/lib/PR/rspboot.o"
 	include "/opt/n64sdk/libultra/usr/lib/PR/gspF3DEX2.xbus.o"
 	include "/opt/n64sdk/libultra/usr/lib/PR/gspF3DEX2.fifo.o"
 endseg
 
 beginwave
-	name "build/blank"
+	name "build/uxn64"
 	include "code"
 endwave
