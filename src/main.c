@@ -36,7 +36,7 @@ OSPiHandle *rom_handle;
 #include "ppu.c"
 #include "uxn/src/uxn.c"
 
-#include "uxn_noodle_rom.c"
+#include "rom.c"
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
