@@ -33,10 +33,23 @@ OSPiHandle *rom_handle;
 // UXN.
 //
 
-#include "ppu.c"
 #include "uxn/src/uxn.c"
+#include "uxn/src/devices/audio.c"
+#include "ppu.c"
 
 #include "rom.c"
+
+#define N_AUDIO_BUF 3
+#define AUDIO_RATE 44100
+#define MAX_AUDIO_LENGTH KB(4)
+#define AUDIO_BUF_SIZE (MAX_AUDIO_LENGTH * sizeof(s32))
+static s16 audio_samples[N_AUDIO_BUF] = {0, 0, 0};
+static s16 audio_buffers[N_AUDIO_BUF][AUDIO_BUF_SIZE] __attribute__((aligned(64)));
+static s32 active_audio = 0;
+static s32 frame_size = 0;
+static s32 min_frame_size = 0;
+static s32 samples_left = 0;
+static int pause_audio = 0;
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
@@ -45,6 +58,7 @@ static Uxn u;
 static Device *devscreen;
 static Device *devctrl;
 static Device *devmouse;
+static Device *devaudio;
 
 #define MOUSE_DELTA 1
 typedef struct Mouse {
@@ -57,7 +71,7 @@ typedef struct Mouse {
 static Mouse mouse = {0};
 
 int
-uxn_halt(Uxn *u, Uint8 error, Uint16 addr) {
+uxn_halt(Uxn *u, u8 error, u16 addr) {
     (void)u;
     (void)error;
     (void)addr;
@@ -100,25 +114,25 @@ screen_palette(Device *d) {
 
 u8
 system_dei(Device *d, u8 port) {
-	switch(port) {
-	case 0x2: return d->u->wst.ptr;
-	case 0x3: return d->u->rst.ptr;
-	default: return d->dat[port];
-	}
+    switch(port) {
+        case 0x2: return d->u->wst.ptr;
+        case 0x3: return d->u->rst.ptr;
+        default: return d->dat[port];
+    }
 }
 
 void
 system_deo(Device *d, u8 port) {
-	switch(port) {
+    switch(port) {
         case 0x2: d->u->wst.ptr = d->dat[port]; break;
         case 0x3: d->u->rst.ptr = d->dat[port]; break;
         case 0xe: break;
         default: {
-            if(port > 0x7 && port < 0xe) {
-                screen_palette(d);
-            }
-        } break;
-	}
+                     if(port > 0x7 && port < 0xe) {
+                         screen_palette(d);
+                     }
+                 } break;
+    }
 }
 
 static void
@@ -141,20 +155,6 @@ screen_dei(Device *d, u8 port) {
 void
 screen_deo(Device *d, u8 port) {
     switch(port) {
-        // case 0x3:
-        //     if(!FIXED_SIZE) {
-        //         Uint16 w;
-        //         DEVPEEK16(w, 0x2);
-        //         screen_resize(&uxn_screen, clamp(w, 1, 1024), uxn_screen.height);
-        //     }
-        //     break;
-        // case 0x5:
-        //     if(!FIXED_SIZE) {
-        //         Uint16 h;
-        //         DEVPEEK16(h, 0x4);
-        //         screen_resize(&uxn_screen, uxn_screen.width, clamp(h, 1, 1024));
-        //     }
-        //     break;
         case 0xe: {
             u16 x, y;
             u8 layer = d->dat[0xe] & 0x40;
@@ -193,8 +193,28 @@ screen_deo(Device *d, u8 port) {
             DEVPOKE16(0x8, x + dx); /* auto x+8 */
             DEVPOKE16(0xa, y + dy); /* auto y+8 */
         } break;
-	}
+    }
     reqdraw = 1;
+}
+
+static u8
+audio_dei(Device *d, u8 port) {
+    int instance = d - devaudio;
+    switch(port) {
+        case 0x4: return audio_get_vu(instance);
+        case 0x2: DEVPOKE16(0x2, audio_get_position(instance)); /* fall through */
+        default: return d->dat[port];
+    }
+}
+
+static void
+audio_deo(Device *d, u8 port) {
+    int instance = d - devaudio;
+    if(port == 0xf) {
+        // TODO: stop the audio before audio_start
+        audio_start(instance, d);
+        pause_audio = 0;
+    }
 }
 
 void
@@ -352,10 +372,10 @@ poll_input() {
 void
 init_uxn(Uxn *u) {
     // Setup UXN memory.
-	for (size_t i = 0; i < sizeof(uxn_ram); i++) {
-	    uxn_ram[i] = 0;
-	}
-	uxn_boot(u, uxn_ram);
+    for (size_t i = 0; i < sizeof(uxn_ram); i++) {
+        uxn_ram[i] = 0;
+    }
+    uxn_boot(u, uxn_ram);
 
     // Copy rom to VM.
     // memcpy(u->ram + PAGE_PROGRAM, uxn_rom, sizeof(uxn_rom));
@@ -369,10 +389,10 @@ init_uxn(Uxn *u) {
     /* system   */ uxn_port(u, 0x0, system_dei, system_deo);
     /* console  */ uxn_port(u, 0x1, nil_dei, console_deo);
     /* screen   */ devscreen = uxn_port(u, 0x2, screen_dei, screen_deo);
-    /* audio0   */ uxn_port(u, 0x3, nil_dei, nil_deo);
-    /* audio1   */ uxn_port(u, 0x4, nil_dei, nil_deo);
-    /* audio2   */ uxn_port(u, 0x5, nil_dei, nil_deo);
-    /* audio3   */ uxn_port(u, 0x6, nil_dei, nil_deo);
+    /* audio0   */ devaudio = uxn_port(u, 0x3, audio_dei, audio_deo);
+    /* audio1   */ uxn_port(u, 0x4, audio_dei, audio_deo);
+    /* audio2   */ uxn_port(u, 0x5, audio_dei, audio_deo);
+    /* audio3   */ uxn_port(u, 0x6, audio_dei, audio_deo);
     /* unused   */ uxn_port(u, 0x7, nil_dei, nil_deo);
     /* control  */ devctrl = uxn_port(u, 0x8, nil_dei, nil_deo);
     /* mouse    */ devmouse = uxn_port(u, 0x9, nil_dei, nil_deo);
@@ -385,20 +405,63 @@ init_uxn(Uxn *u) {
     uxn_eval(u, PAGE_PROGRAM);
 }
 
+void
+init_audio(void) {
+    s32 audio_rate = osAiSetFrequency(AUDIO_RATE);
+    osWritebackDCache(audio_buffers, sizeof(audio_buffers));
+}
+
+void
+handle_audio(void) {
+    if (pause_audio) {
+        return;
+    }
+
+    u32 status = osAiGetStatus();
+    if (status & AI_STATUS_FIFO_FULL > 0) {
+        return;
+    }
+
+    int running = 0;
+    s16 *samples = &audio_buffers[active_audio];
+    for (size_t i = 0; i < AUDIO_BUF_SIZE; i++) {
+        samples[i] = 0;
+    }
+    for(int channel = 0; channel < POLYPHONY; channel++) {
+        running += audio_render(channel, samples, samples + AUDIO_BUF_SIZE / 2);
+    }
+    if(!running) {
+        pause_audio = 1;
+    }
+
+    osAiSetNextBuffer(audio_buffers[active_audio], AUDIO_BUF_SIZE);
+    active_audio++;
+    if (active_audio == N_AUDIO_BUF) {
+        active_audio = 0;
+    }
+}
+
 static void
 main_proc(void *arg) {
     (void)arg;
     init_ppu();
+    init_audio();
     init_ctrl();
     init_uxn(&u);
 
     // Main loop.
     while (true) {
         poll_input();
+        handle_audio();
         uxn_eval(&u, GETVECTOR(devscreen));
         blit_framebuffer();
         swap_buffers();
     }
+}
+
+void
+audio_finished_handler(int instance) {
+    (void)instance;
 }
 
 static void
