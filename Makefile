@@ -32,10 +32,12 @@ INC_FLAGS   := $(addprefix -I,$(INC_DIRS))
 # Output names and executables.
 TARGET := uxn64
 ELF    := $(BUILD_DIR)/$(TARGET).elf
-BIN    := $(BUILD_DIR)/$(TARGET).n64
+BIN    := $(BUILD_DIR)/$(TARGET).bin
+ROM    := $(BUILD_DIR)/$(TARGET).n64
 
 # Target tools.
 TOOLS_BIN2CARR := tools/bin2carr/build/bin2carr
+TOOLS_MAKEROM  := tools/makerom/build/makerom
 
 # Main compilation tool paths.
 CC       := $(SDK_BIN)/mips32-elf-gcc
@@ -43,8 +45,6 @@ LD       := $(SDK_BIN)/mips32-elf-ld
 AS       := $(SDK_BIN)/mips32-elf-as
 OBJDUMP  := $(SDK_BIN)/mips32-elf-objdump
 OBJCOPY  := $(SDK_BIN)/mips32-elf-objcopy
-# TODO: Replace with internal tools to avoid dependencies.
-MAKEMASK := $(SDK_BIN)/makemask
 
 # Compiler and linker configuration.
 CFLAGS         := -Wall -Wextra -pedantic
@@ -65,16 +65,18 @@ else
     CFLAGS += $(RELEASE_CFLAGS)
 endif
 
-main: $(BIN)
+main: $(ROM)
 
 # Compile the elf file.
 $(ELF): $(SRC_MAIN) $(UXN_ROM_C) $(WATCH_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(ELF) -T $(SRC_LN) $(SRC_MAIN) $(LDLIBS)
 
 # Create the valid .n64 rom from the elf file.
-$(BIN): $(ELF) $(OBJECTS) $(WATCH_SRC) | $(BUILD_DIR)
-	$(OBJCOPY) -O binary $< $@
-	$(MAKEMASK) $(BIN)
+$(BIN): $(ELF) $(WATCH_SRC) | $(BUILD_DIR)
+	$(OBJCOPY) -O binary $(ELF) $(BIN)
+
+$(ROM): $(BIN) $(TOOLS_MAKEROM) $(WATCH_SRC) | $(BUILD_DIR)
+	$(TOOLS_MAKEROM) $(BIN) -o $(ROM)
 
 # Build the uxn rom's C file.
 $(UXN_ROM_C): $(TOOLS_BIN2CARR) | $(BUILD_DIR)
@@ -84,9 +86,12 @@ $(UXN_ROM_C): $(TOOLS_BIN2CARR) | $(BUILD_DIR)
 $(TOOLS_BIN2CARR):
 	make -C tools/bin2carr
 
+$(TOOLS_MAKEROM):
+	make -C tools/makerom
+
 # Test the output .n64 in an emulator.
-run: $(BIN)
-	$(EMULATOR) $(BIN)
+run: $(ROM)
+	$(EMULATOR) $(ROM)
 
 # Remove build directory.
 clean:
