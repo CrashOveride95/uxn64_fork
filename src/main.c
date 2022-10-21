@@ -8,8 +8,10 @@
 
 static OSThread idle_thread;
 static OSThread main_thread;
+static OSThread audio_thread;
 extern u8 _idle_thread_stack[];
 extern u8 _main_thread_stack[];
+extern u8 _audio_thread_stack[];
 
 //
 // Message buffers, queues and devices.
@@ -41,15 +43,11 @@ OSPiHandle *rom_handle;
 
 #define N_AUDIO_BUF 3
 #define AUDIO_RATE 44100
-#define MAX_AUDIO_LENGTH KB(4)
+#define MAX_AUDIO_LENGTH KB(1)
 #define AUDIO_BUF_SIZE (MAX_AUDIO_LENGTH * sizeof(s32))
-static s16 audio_samples[N_AUDIO_BUF] = {0, 0, 0};
 static s16 audio_buffers[N_AUDIO_BUF][AUDIO_BUF_SIZE] __attribute__((aligned(64)));
 static s32 active_audio = 0;
-static s32 frame_size = 0;
-static s32 min_frame_size = 0;
-static s32 samples_left = 0;
-static int pause_audio = 0;
+static s32 pause_audio = 0;
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
@@ -407,33 +405,25 @@ init_uxn(Uxn *u) {
 
 void
 init_audio(void) {
-    s32 audio_rate = osAiSetFrequency(AUDIO_RATE);
+    osAiSetFrequency(AUDIO_RATE);
     osWritebackDCache(audio_buffers, sizeof(audio_buffers));
 }
 
 void
 handle_audio(void) {
-    if (pause_audio) {
-        return;
-    }
-
-    u32 status = osAiGetStatus();
-    if (status & AI_STATUS_FIFO_FULL > 0) {
-        return;
-    }
-
     int running = 0;
-    s16 *samples = &audio_buffers[active_audio];
+    s16 *samples = (s16*)&audio_buffers[active_audio];
     for (size_t i = 0; i < AUDIO_BUF_SIZE; i++) {
         samples[i] = 0;
     }
-    for(int channel = 0; channel < POLYPHONY; channel++) {
-        running += audio_render(channel, samples, samples + AUDIO_BUF_SIZE / 2);
+    if (!pause_audio) {
+        for(int channel = 0; channel < POLYPHONY; channel++) {
+            running += audio_render(channel, samples, samples + AUDIO_BUF_SIZE / 2);
+        }
+        if(!running) {
+            pause_audio = 1;
+        }
     }
-    if(!running) {
-        pause_audio = 1;
-    }
-
     osAiSetNextBuffer(audio_buffers[active_audio], AUDIO_BUF_SIZE);
     active_audio++;
     if (active_audio == N_AUDIO_BUF) {
@@ -445,17 +435,33 @@ static void
 main_proc(void *arg) {
     (void)arg;
     init_ppu();
-    init_audio();
     init_ctrl();
     init_uxn(&u);
 
     // Main loop.
     while (true) {
         poll_input();
-        handle_audio();
         uxn_eval(&u, GETVECTOR(devscreen));
         blit_framebuffer();
         swap_buffers();
+    }
+}
+
+static OSMesg audio_msg_buf;
+static OSMesgQueue audio_msg_queue;
+
+static void
+audio_proc(void *arg) {
+    (void)arg;
+    osCreateMesgQueue(&audio_msg_queue, &audio_msg_buf, 1);
+    osSetEventMesg(OS_EVENT_AI, &audio_msg_queue, &audio_msg_buf);
+    init_audio();
+    while (true) {
+        handle_audio();
+        u32 status = osAiGetStatus();
+        if ((status & AI_STATUS_FIFO_FULL) > 0) {
+            osRecvMesg(&audio_msg_queue, NULL, OS_MESG_BLOCK);
+        }
     }
 }
 
@@ -475,8 +481,12 @@ idle_proc(void *arg) {
     osCreatePiManager((OSPri)OS_PRIORITY_PIMGR, &pi_msg_queue, pi_msg, NUM_PI_MSGS);
 
     // Create main thread.
-    osCreateThread(&main_thread, 3, main_proc, NULL, _main_thread_stack, 10);
+    osCreateThread(&main_thread, 2, main_proc, NULL, _main_thread_stack, 10);
     osStartThread(&main_thread);
+
+    // Create audio thread.
+    osCreateThread(&audio_thread, 3, audio_proc, NULL, _audio_thread_stack, 10);
+    osStartThread(&audio_thread);
 
     // Become the idle thread.
     osSetThreadPri(0, 0);

@@ -41,6 +41,10 @@ SECTIONS {
 
         . += STACK_SIZE;
         . = ALIGN(8);
+        _audio_thread_stack = .;
+
+        . += STACK_SIZE;
+        . = ALIGN(8);
         _idle_thread_stack = .;
     } >ram
 
