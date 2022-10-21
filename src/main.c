@@ -41,13 +41,14 @@ OSPiHandle *rom_handle;
 
 #include "rom.c"
 
-#define N_AUDIO_BUF 3
+#define N_AUDIO_BUF 4
 #define AUDIO_RATE 44100
-#define MAX_AUDIO_LENGTH KB(1)
-#define AUDIO_BUF_SIZE (MAX_AUDIO_LENGTH * sizeof(s32))
+#define AUDIO_BUF_SIZE (KB(2) * 2)
 static s16 audio_buffers[N_AUDIO_BUF][AUDIO_BUF_SIZE] __attribute__((aligned(64)));
 static s32 active_audio = 0;
 static s32 pause_audio = 0;
+static OSMesg audio_msg_buf;
+static OSMesgQueue audio_msg_queue;
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
@@ -126,10 +127,10 @@ system_deo(Device *d, u8 port) {
         case 0x3: d->u->rst.ptr = d->dat[port]; break;
         case 0xe: break;
         default: {
-                     if(port > 0x7 && port < 0xe) {
-                         screen_palette(d);
-                     }
-                 } break;
+            if(port > 0x7 && port < 0xe) {
+                screen_palette(d);
+            }
+        } break;
     }
 }
 
@@ -376,7 +377,6 @@ init_uxn(Uxn *u) {
     uxn_boot(u, uxn_ram);
 
     // Copy rom to VM.
-    // memcpy(u->ram + PAGE_PROGRAM, uxn_rom, sizeof(uxn_rom));
     u8 *dst = u->ram + PAGE_PROGRAM;
     u8 *src = (u8*)uxn_rom;
     for (size_t i = 0; i < sizeof(uxn_rom); i++) {
@@ -410,24 +410,19 @@ init_audio(void) {
 }
 
 void
-handle_audio(void) {
-    int running = 0;
+sound_mix(void) {
     s16 *samples = (s16*)&audio_buffers[active_audio];
     for (size_t i = 0; i < AUDIO_BUF_SIZE; i++) {
         samples[i] = 0;
     }
     if (!pause_audio) {
+        int running = 0;
         for(int channel = 0; channel < POLYPHONY; channel++) {
             running += audio_render(channel, samples, samples + AUDIO_BUF_SIZE / 2);
         }
         if(!running) {
             pause_audio = 1;
         }
-    }
-    osAiSetNextBuffer(audio_buffers[active_audio], AUDIO_BUF_SIZE);
-    active_audio++;
-    if (active_audio == N_AUDIO_BUF) {
-        active_audio = 0;
     }
 }
 
@@ -444,11 +439,9 @@ main_proc(void *arg) {
         uxn_eval(&u, GETVECTOR(devscreen));
         blit_framebuffer();
         swap_buffers();
+        osYieldThread();
     }
 }
-
-static OSMesg audio_msg_buf;
-static OSMesgQueue audio_msg_queue;
 
 static void
 audio_proc(void *arg) {
@@ -457,10 +450,17 @@ audio_proc(void *arg) {
     osSetEventMesg(OS_EVENT_AI, &audio_msg_queue, &audio_msg_buf);
     init_audio();
     while (true) {
-        handle_audio();
+        sound_mix();
+        osAiSetNextBuffer(audio_buffers[active_audio], AUDIO_BUF_SIZE);
+        active_audio++;
+        if (active_audio == N_AUDIO_BUF) {
+            active_audio = 0;
+        }
         u32 status = osAiGetStatus();
         if ((status & AI_STATUS_FIFO_FULL) > 0) {
             osRecvMesg(&audio_msg_queue, NULL, OS_MESG_BLOCK);
+        } else {
+            osYieldThread();
         }
     }
 }
