@@ -64,6 +64,9 @@ write_array(FILE *file_in, FILE *file_out, char *arr_name, ElemSize elem_size) {
             case ELEM_S8: {
                 u8 elem;
                 n_read = fread(&elem, sizeof(u8), 1, file_in);
+                if (n_read == 0) {
+                    break;
+                }
                 fprintf(file_out, "0x%02x,", elem);
                 break;
             }
@@ -71,6 +74,9 @@ write_array(FILE *file_in, FILE *file_out, char *arr_name, ElemSize elem_size) {
             case ELEM_S16: {
                 u16 elem;
                 n_read = fread(&elem, sizeof(u16), 1, file_in);
+                if (n_read == 0) {
+                    break;
+                }
                 fprintf(file_out, "0x%04x,", elem);
                 break;
             }
@@ -78,6 +84,9 @@ write_array(FILE *file_in, FILE *file_out, char *arr_name, ElemSize elem_size) {
             case ELEM_S32: {
                 u32 elem;
                 n_read = fread(&elem, sizeof(u32), 1, file_in);
+                if (n_read == 0) {
+                    break;
+                }
                 fprintf(file_out, "0x%08x,", elem);
                 break;
             }
@@ -85,9 +94,15 @@ write_array(FILE *file_in, FILE *file_out, char *arr_name, ElemSize elem_size) {
             case ELEM_S64: {
                 u64 elem;
                 n_read = fread(&elem, sizeof(u64), 1, file_in);
+                if (n_read == 0) {
+                    break;
+                }
                 fprintf(file_out, "0x%016lx,", elem);
                 break;
             }
+        }
+        if (n_read == 0) {
+            break;
         }
 
         if (counter == n_elem - 1) {

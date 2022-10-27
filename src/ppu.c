@@ -18,8 +18,8 @@ u16 framebuffers[2][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
 static u16 pixels[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
 static int current_fb = 0;
 
-static size_t screen_width = SCREEN_WIDTH;
-static size_t screen_height = SCREEN_HEIGHT;
+static u16 screen_width = SCREEN_WIDTH;
+static u16 screen_height = SCREEN_HEIGHT;
 static u16 palette[16];
 
 static u8 pixels_fg[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(16)));
@@ -112,7 +112,18 @@ init_ppu(void) {
             pixels[i + j * SCREEN_WIDTH] = color;
         }
     }
-    // TODO: clear pixel buffers and dirty lines
+
+    // Clear pixel buffers and dirty lines
+    for (size_t i = 0; i < 16; i++) {
+        palette[i] = 0;
+    }
+    for (size_t i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
+        pixels_fg[i] = 0;
+        pixels_bg[i] = 0;
+    }
+    for (size_t i = 0; i < SCREEN_HEIGHT; i++) {
+        dirty_lines[i] = 0;
+    }
 
     // Setup the message queues
     osCreateMesgQueue(&retrace_msg_queue, &retrace_msg_buf, 1);
