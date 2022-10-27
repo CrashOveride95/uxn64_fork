@@ -68,6 +68,7 @@ typedef struct Mouse {
 } Mouse;
 
 static Mouse mouse = {0};
+static size_t seconds = 0;
 
 int
 uxn_halt(Uxn *u, u8 error, u16 addr) {
@@ -85,6 +86,22 @@ uxn_interrupt(void) {
 static u8
 nil_dei(Device *d, u8 port) {
     return d->dat[port];
+}
+
+u8
+datetime_dei(Device *d, u8 port) {
+    (void)port;
+    size_t minutes = seconds / 60;
+    size_t hours = minutes / 60;
+    DEVPOKE16(0x0, 0);
+    d->dat[0x2] = 0;
+    d->dat[0x3] = 0;
+    d->dat[0x4] = hours;
+    d->dat[0x5] = minutes;
+    d->dat[0x6] = seconds % 60;
+    d->dat[0x7] = 0;
+    DEVPOKE16(0x08, 0);
+    d->dat[0xa] = 0;
 }
 
 static void
@@ -396,7 +413,7 @@ init_uxn(Uxn *u) {
     /* mouse    */ devmouse = uxn_port(u, 0x9, nil_dei, nil_deo);
     /* file0    */ uxn_port(u, 0xa, nil_dei, nil_deo);
     /* file1    */ uxn_port(u, 0xb, nil_dei, nil_deo);
-    /* datetime */ uxn_port(u, 0xc, nil_dei, nil_deo);
+    /* datetime */ uxn_port(u, 0xc, datetime_dei, nil_deo);
     /* unused   */ uxn_port(u, 0xd, nil_dei, nil_deo);
     /* unused   */ uxn_port(u, 0xe, nil_dei, nil_deo);
     /* unused   */ uxn_port(u, 0xf, nil_dei, nil_deo);
@@ -434,12 +451,17 @@ main_proc(void *arg) {
     init_uxn(&u);
 
     // Main loop.
+    u8 frame_counter = 0;
     while (true) {
         poll_input();
         uxn_eval(&u, GETVECTOR(devscreen));
         blit_framebuffer();
         swap_buffers();
         osYieldThread();
+        if (frame_counter == 60) {
+            seconds++;
+            frame_counter = 0;
+        }
     }
 }
 
