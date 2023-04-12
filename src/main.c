@@ -52,12 +52,10 @@ static OSMesgQueue audio_msg_queue;
 
 #define CLAMP(X, MIN, MAX) ((X) <= (MIN) ? (MIN) : (X) > (MAX) ? (MAX): (X))
 
-static u8 uxn_ram[0x10000];
+static u8 uxn_ram[0x80000];
 static Uxn u;
-static Device *devscreen;
-static Device *devctrl;
-static Device *devmouse;
-static Device *devaudio;
+u16 deo_mask[] = {0xff08, 0x0300, 0xc028, 0x8000, 0x8000, 0x8000, 0x8000, 0x0000, 0x0000, 0x0000, 0xa260, 0xa260, 0x0000, 0x0000, 0x0000, 0x0000};
+u16 dei_mask[] = {0x0000, 0x0000, 0x003c, 0x0014, 0x0014, 0x0014, 0x0014, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x07ff, 0x0000, 0x0000, 0x0000};
 
 #define MOUSE_DELTA 1
 typedef struct Mouse {
@@ -71,9 +69,10 @@ static Mouse mouse = {0};
 static size_t seconds = 0;
 
 int
-uxn_halt(Uxn *u, u8 error, u16 addr) {
+uxn_halt(Uxn *u, u8 instr, u8 err, u16 addr) {
     (void)u;
-    (void)error;
+    (void)instr;
+    (void)err;
     (void)addr;
     for (;;) {}
 }
@@ -83,39 +82,44 @@ uxn_interrupt(void) {
     return 1;
 }
 
-static u8
-nil_dei(Device *d, u8 port) {
-    return d->dat[port];
-}
-
 u8
-datetime_dei(Device *d, u8 port) {
-    (void)port;
-    size_t minutes = seconds / 60;
-    size_t hours = minutes / 60;
-    DEVPOKE16(0x0, 0);
-    d->dat[0x2] = 0;
-    d->dat[0x3] = 0;
-    d->dat[0x4] = hours;
-    d->dat[0x5] = minutes;
-    d->dat[0x6] = seconds % 60;
-    d->dat[0x7] = 0;
-    DEVPOKE16(0x08, 0);
-    d->dat[0xa] = 0;
+datetime_dei(Uxn *u, u8 addr) {
+    (void)u;
+    (void)addr;
+    // size_t minutes = seconds / 60;
+    // size_t hours = minutes / 60;
+    // POKE2(d + 0x0, 0);
+    // d[0x2] = 0;
+    // d[0x3] = 0;
+    // d[0x4] = hours;
+    // d[0x5] = minutes;
+    // d[0x6] = seconds % 60;
+    // d[0x7] = 0;
+    // // POKE2(d + 0x08, 0);
+    // d[0xa] = 0;
+	// switch(addr) {
+	// case 0xc0: return 0;
+	// case 0xc1: return 0;
+	// case 0xc2: return 0;
+	// case 0xc3: return 0;
+	// case 0xc4: return hours;
+	// case 0xc5: return minutes;
+	// case 0xc6: return seconds % 60;
+	// case 0xc7: return 0;
+	// case 0xc8: return 0;
+	// case 0xc9: return 0;
+	// case 0xca: return 0;
+	// default: return u->dev[addr];
+	// }
+	// return 0;
 }
 
 static void
-nil_deo(Device *d, u8 port) {
-    (void)d;
-    (void)port;
-}
-
-static void
-screen_palette(Device *d) {
+screen_palette(u8 *d) {
     for(size_t i = 0; i < 4; ++i) {
-        u8 r = ((d->dat[0x8 + i / 2] >> (!(i % 2) << 2)) & 0x0f) * 0x11;
-        u8 g = ((d->dat[0xa + i / 2] >> (!(i % 2) << 2)) & 0x0f) * 0x11;
-        u8 b = ((d->dat[0xc + i / 2] >> (!(i % 2) << 2)) & 0x0f) * 0x11;
+        u8 r = ((*(d +     i / 2) >> (!(i % 2) << 2)) & 0x0f) * 0x11;
+        u8 g = ((*(d + 2 + i / 2) >> (!(i % 2) << 2)) & 0x0f) * 0x11;
+        u8 b = ((*(d + 4 + i / 2) >> (!(i % 2) << 2)) & 0x0f) * 0x11;
 
         palette[i] = GPACK_RGBA5551(r, g, b, 1);
     }
@@ -128,107 +132,110 @@ screen_palette(Device *d) {
     redraw_screen();
 }
 
-u8
-system_dei(Device *d, u8 port) {
-    switch(port) {
-        case 0x2: return d->u->wst.ptr;
-        case 0x3: return d->u->rst.ptr;
-        default: return d->dat[port];
+#define RAM_PAGES 0x10
+
+static void
+system_cmd(Uint8 *ram, Uint16 addr) {
+    if(ram[addr] == 0x01) {
+        Uint16 i, length = PEEK2(ram + addr + 1);
+        Uint16 a_page = PEEK2(ram + addr + 1 + 2), a_addr = PEEK2(ram + addr + 1 + 4);
+        Uint16 b_page = PEEK2(ram + addr + 1 + 6), b_addr = PEEK2(ram + addr + 1 + 8);
+        int src = (a_page % RAM_PAGES) * 0x10000, dst = (b_page % RAM_PAGES) * 0x10000;
+        for(i = 0; i < length; i++)
+            ram[dst + (Uint16)(b_addr + i)] = ram[src + (Uint16)(a_addr + i)];
     }
 }
 
 void
-system_deo(Device *d, u8 port) {
+system_deo(Uxn *u, u8 *d, u8 port) {
     switch(port) {
-        case 0x2: d->u->wst.ptr = d->dat[port]; break;
-        case 0x3: d->u->rst.ptr = d->dat[port]; break;
-        case 0xe: break;
-        default: {
-            if(port > 0x7 && port < 0xe) {
-                screen_palette(d);
-            }
-        } break;
+        case 0x3:
+            system_cmd(u->ram, PEEK2(d + 2));
+            break;
+            // case 0xe:
+            // 	system_inspect(u);
+            // 	break;
     }
 }
 
 static void
-console_deo(Device *d, u8 port) {
+console_deo(u8 *d, u8 port) {
     (void)d;
     (void)port;
 }
 
 u8
-screen_dei(Device *d, u8 port) {
+screen_dei(u8 *d, u8 port) {
     switch(port) {
         case 0x2: return screen_width >> 8;
         case 0x3: return screen_width;
         case 0x4: return screen_height >> 8;
         case 0x5: return screen_height;
-        default: return d->dat[port];
+        default: return d[port];
     }
 }
 
 void
-screen_deo(Device *d, u8 port) {
+screen_deo(u8 *ram, u8 *d, u8 port) {
     switch(port) {
         case 0xe: {
             u16 x, y;
-            u8 layer = d->dat[0xe] & 0x40;
-            DEVPEEK16(x, 0x8);
-            DEVPEEK16(y, 0xa);
-            ppu_pixel(layer ? pixels_fg : pixels_bg, x, y, d->dat[0xe] & 0x3);
-            if(d->dat[0x6] & 0x01) DEVPOKE16(0x8, x + 1); /* auto x+1 */
-            if(d->dat[0x6] & 0x02) DEVPOKE16(0xa, y + 1); /* auto y+1 */
-        } break;
+            u8 layer = d[0xe] & 0x40;
+            x = PEEK2(d + 0x8);
+            y = PEEK2(d + 0xa);
+            ppu_pixel(layer ? pixels_fg : pixels_bg, x, y, d[0xe] & 0x3);
+            if(d[0x6] & 0x01) POKE2(d + 0x8, x + 1); /* auto x+1 */
+            if(d[0x6] & 0x02) POKE2(d + 0xa, y + 1); /* auto y+1 */
+            break;
+        }
         case 0xf: {
             u16 x, y, dx, dy, addr;
-            u8 twobpp = !!(d->dat[0xf] & 0x80);
-            DEVPEEK16(x, 0x8);
-            DEVPEEK16(y, 0xa);
-            DEVPEEK16(addr, 0xc);
-            u8 n = d->dat[0x6] >> 4;
-            dx = (d->dat[0x6] & 0x01) << 3;
-            dy = (d->dat[0x6] & 0x02) << 2;
+            u8 n, twobpp = !!(d[0xf] & 0x80);
+            x    = PEEK2(d + 0x8);
+            y    = PEEK2(d + 0xa);
+            addr = PEEK2(d + 0xc);
+            n = d[0x6] >> 4;
+            dx = (d[0x6] & 0x01) << 3;
+            dy = (d[0x6] & 0x02) << 2;
             if(addr > 0x10000 - ((n + 1) << (3 + twobpp))) {
                 return;
             }
-            u8 *layer = (d->dat[0xf] & 0x40) ? pixels_fg : pixels_bg;
-            u8 color = d->dat[0xf] & 0xf;
-            u8 flipx = d->dat[0xf] & 0x10;
-            u8 flipy = d->dat[0xf] & 0x20;
+            u8 *layer = (d[0xf] & 0x40) ? pixels_fg : pixels_bg;
+            u8 color = d[0xf] & 0xf;
+            u8 flipx = d[0xf] & 0x10;
+            u8 flipy = d[0xf] & 0x20;
             for(size_t i = 0; i <= n; i++) {
-                u8 *sprite = &d->u->ram[addr];
+                u8 *sprite = &ram[addr];
                 if (twobpp) {
                     ppu_2bpp(layer, x + dy * i, y + dx * i, sprite, color, flipx, flipy);
                 } else {
                     ppu_1bpp(layer, x + dy * i, y + dx * i, sprite, color, flipx, flipy);
                 }
-                addr += (d->dat[0x6] & 0x04) << (1 + twobpp);
+                addr += (d[0x6] & 0x04) << (1 + twobpp);
             }
-            DEVPOKE16(0xc, addr);   /* auto addr+length */
-            DEVPOKE16(0x8, x + dx); /* auto x+8 */
-            DEVPOKE16(0xa, y + dy); /* auto y+8 */
-        } break;
+            POKE2(d + 0xc, addr);   /* auto addr+length */
+            POKE2(d + 0x8, x + dx); /* auto x+8 */
+            POKE2(d + 0xa, y + dy); /* auto y+8 */
+            break;
+        }
     }
     reqdraw = 1;
 }
 
 static u8
-audio_dei(Device *d, u8 port) {
-    int instance = d - devaudio;
+audio_dei(int instance, u8 *d, u8 port) {
     switch(port) {
         case 0x4: return audio_get_vu(instance);
-        case 0x2: DEVPOKE16(0x2, audio_get_position(instance)); /* fall through */
-        default: return d->dat[port];
+        case 0x2: POKE2(d + 0x2, audio_get_position(instance)); /* fall through */
+        default: return d[port];
     }
 }
 
 static void
-audio_deo(Device *d, u8 port) {
-    int instance = d - devaudio;
+audio_deo(int instance, u8 *d, u8 port, Uxn *u) {
     if(port == 0xf) {
         // TODO: stop the audio before audio_start
-        audio_start(instance, d);
+        audio_start(instance, d, u);
         pause_audio = 0;
     }
 }
@@ -263,8 +270,9 @@ handle_input(int i) {
     bool update_mouse = false;
 
     // Check for controller changes.
+        u8 *devctrl = &u.dev[0x80];
     if (prev_pad.button != current_pad.button) {
-        u8 *uxn_ctrl = &devctrl->dat[2];
+        u8 *uxn_ctrl = &devctrl[2];
         if (current_pad.button & U_JPAD || current_pad.button & U_CBUTTONS) {
             *uxn_ctrl |= 0x10;
             update_ctrl = true;
@@ -340,28 +348,28 @@ handle_input(int i) {
     }
 
     // Check for "mouse" x/y changes.
+    u8 *devmouse = &u.dev[0x90];
     if (current_pad.stick_x != 0 || current_pad.stick_y != 0) {
-        Device *d = devmouse;
         mouse.x = CLAMP(mouse.x + prev_pad.stick_x / 8, 0, (s32)screen_width);
         mouse.y = CLAMP(mouse.y - prev_pad.stick_y / 8, 0, (s32)screen_height);
-        DEVPOKE16(0x2, mouse.x);
-        DEVPOKE16(0x4, mouse.y);
+        POKE2(devmouse + 0x2, mouse.x);
+        POKE2(devmouse + 0x4, mouse.y);
         update_mouse = true;
     }
 
     if (update_ctrl) {
-        uxn_eval(&u, GETVECTOR(devctrl));
-        devctrl->dat[3] = 0;
+        uxn_eval(&u, PEEK2(devctrl));
+        devctrl[3] = 0;
     }
     if (update_mouse) {
-        devmouse->dat[6] = mouse.buttons;
-        if(mouse.buttons == 0x10 && (devmouse->dat[6] & 0x01)) {
-            devmouse->dat[7] = 0x01;
+        devmouse[6] = mouse.buttons;
+        if(mouse.buttons == 0x10 && (devmouse[6] & 0x01)) {
+            devmouse[7] = 0x01;
         }
-        if(mouse.buttons == 0x01 && (devmouse->dat[6] & 0x10)) {
-            devmouse->dat[7] = 0x10;
+        if(mouse.buttons == 0x01 && (devmouse[6] & 0x10)) {
+            devmouse[7] = 0x10;
         }
-        uxn_eval(&u, GETVECTOR(devmouse));
+        uxn_eval(&u, PEEK2(devmouse));
     }
 }
 
@@ -385,6 +393,40 @@ poll_input() {
     }
 }
 
+u8
+uxn_dei(Uxn *u, u8 addr) {
+    u8 p = addr & 0x0f, d = addr & 0xf0;
+    switch(d) {
+        case 0x20: return screen_dei(&u->dev[d], p);
+        case 0x30: return audio_dei(0, &u->dev[d], p);
+        case 0x40: return audio_dei(1, &u->dev[d], p);
+        case 0x50: return audio_dei(2, &u->dev[d], p);
+        case 0x60: return audio_dei(3, &u->dev[d], p);
+        case 0xc0: return datetime_dei(u, p);
+    }
+    return u->dev[addr];
+}
+
+void
+uxn_deo(Uxn *u, u8 addr) {
+	u8 p = addr & 0x0f, d = addr & 0xf0;
+	switch(d) {
+	case 0x00:
+		system_deo(u, &u->dev[d], p);
+        if(p > 0x7 && p < 0xe)
+            screen_palette(&u->dev[0x8]);
+		break;
+	case 0x10: console_deo(&u->dev[d], p); break;
+	case 0x20: screen_deo(u->ram, &u->dev[d], p); break;
+	case 0x30: audio_deo(0, &u->dev[d], p, u); break;
+	case 0x40: audio_deo(1, &u->dev[d], p, u); break;
+	case 0x50: audio_deo(2, &u->dev[d], p, u); break;
+	case 0x60: audio_deo(3, &u->dev[d], p, u); break;
+	// case 0xa0: file_deo_2(0, u->ram, &u->dev[d], p); break;
+	// case 0xb0: file_deo_2(1, u->ram, &u->dev[d], p); break;
+	}
+}
+
 void
 init_uxn(Uxn *u) {
     // Setup UXN memory.
@@ -401,22 +443,6 @@ init_uxn(Uxn *u) {
     }
 
     // Prepare devices.
-    /* system   */ uxn_port(u, 0x0, system_dei, system_deo);
-    /* console  */ uxn_port(u, 0x1, nil_dei, console_deo);
-    /* screen   */ devscreen = uxn_port(u, 0x2, screen_dei, screen_deo);
-    /* audio0   */ devaudio = uxn_port(u, 0x3, audio_dei, audio_deo);
-    /* audio1   */ uxn_port(u, 0x4, audio_dei, audio_deo);
-    /* audio2   */ uxn_port(u, 0x5, audio_dei, audio_deo);
-    /* audio3   */ uxn_port(u, 0x6, audio_dei, audio_deo);
-    /* unused   */ uxn_port(u, 0x7, nil_dei, nil_deo);
-    /* control  */ devctrl = uxn_port(u, 0x8, nil_dei, nil_deo);
-    /* mouse    */ devmouse = uxn_port(u, 0x9, nil_dei, nil_deo);
-    /* file0    */ uxn_port(u, 0xa, nil_dei, nil_deo);
-    /* file1    */ uxn_port(u, 0xb, nil_dei, nil_deo);
-    /* datetime */ uxn_port(u, 0xc, datetime_dei, nil_deo);
-    /* unused   */ uxn_port(u, 0xd, nil_dei, nil_deo);
-    /* unused   */ uxn_port(u, 0xe, nil_dei, nil_deo);
-    /* unused   */ uxn_port(u, 0xf, nil_dei, nil_deo);
     uxn_eval(u, PAGE_PROGRAM);
 }
 
@@ -454,7 +480,7 @@ main_proc(void *arg) {
     u8 frame_counter = 0;
     while (true) {
         poll_input();
-        uxn_eval(&u, GETVECTOR(devscreen));
+        uxn_eval(&u, PEEK2(&u.dev[0x20]));
         blit_framebuffer();
         swap_buffers();
         osYieldThread();
