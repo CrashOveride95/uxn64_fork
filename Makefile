@@ -3,11 +3,8 @@
 .PHONY: main run clean
 
 # Paths for SDK.
-SDK_BASE     := /opt/n64sdk
-SDK_BIN      := $(SDK_BASE)/bin
-LIBULTRA_DIR := $(SDK_BASE)/libultra
-LIBULTRA_INC := $(LIBULTRA_DIR)/usr/include
-LIBULTRA     := $(LIBULTRA_DIR)/usr/lib/libgultra.a
+LIBULTRA_INC := /usr/include/n64
+LIBULTRA     := /usr/lib/n64/libultra.a
 EMULATOR     := ares
 
 # Source code location and files to watch for changes.
@@ -17,7 +14,7 @@ SRC_MAIN    := $(SRC_DIR)/main.c $(SRC_DIR)/entry.s
 SRC_LN      := $(SRC_DIR)/linker.ld
 SRC_OBJ     :=
 UXN_ROM_C   := $(BUILD_DIR)/rom.c
-UXN_ROM     := $(SRC_DIR)/uxn/bin/screen.rom
+UXN_ROM     := $(SRC_DIR)/uxn/bin/piano.rom
 OBJECTS     := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRC_OBJ))
 WATCH_SRC   := $(shell find $(SRC_DIR) \
 			   -name "*.c" -or \
@@ -40,11 +37,11 @@ TOOLS_BIN2CARR := tools/bin2carr/build/bin2carr
 TOOLS_MAKEROM  := tools/makerom/build/makerom
 
 # Main compilation tool paths.
-CC       := $(SDK_BIN)/mips32-elf-gcc
-LD       := $(SDK_BIN)/mips32-elf-ld
-AS       := $(SDK_BIN)/mips32-elf-as
-OBJDUMP  := $(SDK_BIN)/mips32-elf-objdump
-OBJCOPY  := $(SDK_BIN)/mips32-elf-objcopy
+CC       := mips-n64-gcc
+LD       := mips-n64-ld
+AS       := mips-n64-as
+OBJDUMP  := mips-n64-objdump
+OBJCOPY  := mips-n64-objcopy
 
 # Compiler and linker configuration.
 CFLAGS         := -Wall -Wextra -pedantic
@@ -53,7 +50,7 @@ CFLAGS         += -ffreestanding -G 0
 CFLAGS         += $(INC_FLAGS)
 CFLAGS         += -DF3DEX_GBI_2
 LDFLAGS        := -nostdlib
-LDLIBS         := $(LIBULTRA) $(SDK_BASE)/lib/gcc/mips32-elf/13.0.0/libgcc.a
+LDLIBS         := $(LIBULTRA) $(N64_LIBGCCDIR)/libgcc.a
 RELEASE_CFLAGS := -O2 -DNDEBUG -D_FINALROM
 DEBUG_CFLAGS   := -O0 -DDEBUG -D_FINALROM
 

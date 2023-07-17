@@ -1,3 +1,5 @@
 build
 dist
 a.out
+*.rom
+*.sym
